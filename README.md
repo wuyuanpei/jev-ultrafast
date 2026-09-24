@@ -8,7 +8,9 @@
 
 **A browser agent with a dynamic, indexed action space.**
 
-Give it one goal. [TypeSafe's Jev](https://docs.typesafe.ai/introduction) picks an operation and an element. A small LLM writes text only when the operation is `TYPE_TEXT`.
+Give it one goal. Local Laya picks an operation and an element through its TypeSafe-compatible `/v1/systemone` endpoint. A small LLM writes text only when the operation is `TYPE_TEXT`.
+
+This checkout defaults to **Laya at http://127.0.0.1:8791**. The video, timings, and benchmark evidence below are historical Jev results, not measurements of Laya.
 
 **Zürich → London on Google Flights in 7.1 seconds.** One natural-language goal, actual text generation, and loading waits included.
 
@@ -31,7 +33,7 @@ Every observation produces a new element table:
 The operations are `CLICK`, `TYPE_TEXT`, `SELECT`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `DONE`, and `BLOCKED`. Only supported operations and targets are offered.
 
 ```text
-                      one TypeSafe request
+                      one Laya request
                      ┌───────────────────────────┐
 page → element table → operation                 │
                      │ click_target              │
@@ -57,9 +59,11 @@ git clone https://github.com/browser-use/jev-ultrafast.git
 cd jev-ultrafast
 uv sync
 cp .env.example .env
-# Add TYPESAFE_API_KEY and TEXT_MODEL_API_KEY.
+# Add TEXT_MODEL_API_KEY. Local Laya needs no API key.
 uv run jev
 ```
+
+Start your Laya systemone server before running `uv run jev`. `LAYA_BASE_URL` is the server origin (default `http://127.0.0.1:8791`, without `/v1/systemone`). `LAYA_TIMEOUT_SECONDS` defaults to 120 for local inference. `LAYA_MODEL` defaults to `laya-v10s`; the server selects its actual checkpoint at startup, not from this request label. `LAYA_API_KEY` is optional. Old `TYPESAFE_MODEL`, `TYPESAFE_BASE_URL`, and `TYPESAFE_API_KEY` settings are no longer used, so an existing `.env` can retain its text-helper settings without routing decisions to Jev.
 
 Open **http://127.0.0.1:8766** and click **Start demo → Run automatically**. The inspector shows numbered elements, operation probabilities, target probabilities, and executed actions. **Choose next** pauses before execution.
 
@@ -94,7 +98,7 @@ uv run --env-file .env python examples/run.py \
 ## Why it moves
 
 - **One request per decision cycle.** Operation and target heads share the same observed state.
-- **No screenshots in the default agent loop.** Jev consumes structured state. The inspector opts into screenshots; the video uses a separate continuous screencast.
+- **No screenshots in the default agent loop.** Laya consumes structured state. The inspector opts into screenshots; the video uses a separate continuous screencast.
 - **One browser call per snapshot.** Read visible controls, their names, values, and text atomically. Keep references to the actual DOM nodes.
 - **Validate the selected target.** Clicks check the document, form values, target, and nearby context. Animation alone does not force another prediction. Resolve current geometry and reject covered controls before input.
 - **Wait for useful state.** After typing into a combobox, wait for visible suggestions, capped at 200 ms. Other interactions get at most two animation frames or 50 ms. These reads happen after execution is logged.

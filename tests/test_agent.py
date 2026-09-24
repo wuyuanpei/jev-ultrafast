@@ -5,6 +5,7 @@ import time
 from copy import deepcopy
 from unittest.mock import Mock
 
+import httpx
 import pytest
 
 from jev_ultrafast import agent as loop
@@ -60,7 +61,7 @@ def test_invalid_choice_is_rejected(mutation):
         a["choice"] = "b"
     else:
         a["confidence"] = 5
-    with pytest.raises(ValueError, match="Invalid TypeSafe"):
+    with pytest.raises(ValueError, match="Invalid Laya"):
         model.validate_choice(a, {"a", "b"})
 
 
@@ -74,10 +75,51 @@ def test_one_index_per_node_with_operation_specific_targets():
     assert "WAIT" in controls
 
 
+@pytest.mark.parametrize("configured", [False, True])
+def test_laya_endpoint_and_authentication(monkeypatch, configured):
+    for name in ("LAYA_BASE_URL", "LAYA_MODEL", "LAYA_API_KEY", "LAYA_TIMEOUT_SECONDS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("TYPESAFE_BASE_URL", "https://unused.example")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "must-not-leak")
+    monkeypatch.setenv("TYPESAFE_MODEL", "jev-latest")
+    if configured:
+        monkeypatch.setenv("LAYA_BASE_URL", "http://localhost:9999/")
+        monkeypatch.setenv("LAYA_MODEL", "laya-custom")
+        monkeypatch.setenv("LAYA_API_KEY", "local-test")
+        monkeypatch.setenv("LAYA_TIMEOUT_SECONDS", "180")
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        body = json.loads(request.content)
+        return httpx.Response(200, json={
+            "model": "laya-loaded-checkpoint",
+            "answers": {
+                "operation": choice(body["questions"]["operation"]["criteria"], "CLICK"),
+                "click_target": choice(["1", "2"], "2"),
+            },
+        })
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        monkeypatch.setattr(model, "CLIENT", client)
+        result = model.choose(page(), "Open Search", [])
+    assert len(requests) == 1
+    request = requests[0]
+    assert str(request.url) == (
+        "http://localhost:9999/v1/systemone" if configured
+        else "http://127.0.0.1:8791/v1/systemone"
+    )
+    assert request.headers.get("Authorization") == ("Bearer local-test" if configured else None)
+    assert request.extensions["timeout"]["read"] == (180 if configured else 120)
+    assert json.loads(request.content)["model"] == ("laya-custom" if configured else "laya-v10s")
+    assert result["choice"] == "e3"
+    assert result["model"] == "laya-loaded-checkpoint"
+
+
 def test_all_heads_are_one_request_and_only_matching_head_executes(monkeypatch):
     calls = []
 
-    def post(_url, _key, body):
+    def post(_url, _key, body, **kwargs):
         calls.append(body)
         return {
             "model": "test",
@@ -97,7 +139,7 @@ def test_all_heads_are_one_request_and_only_matching_head_executes(monkeypatch):
 
 
 def test_click_cannot_consume_a_text_target(monkeypatch):
-    def post(_url, _key, body):
+    def post(_url, _key, body, **kwargs):
         return {
             "model": "test",
             "answers": {
@@ -109,7 +151,7 @@ def test_click_cannot_consume_a_text_target(monkeypatch):
 
     monkeypatch.setenv("TYPESAFE_API_KEY", "test")
     monkeypatch.setattr(model, "post_json", post)
-    with pytest.raises(ValueError, match="Invalid TypeSafe"):
+    with pytest.raises(ValueError, match="Invalid Laya"):
         model.choose(page(), "Find a book", [])
 
 
@@ -120,7 +162,7 @@ def test_target_head_receives_control_state_and_full_next_step_rules(monkeypatch
         "role": "checkbox", "checked": "true", "selected": False,
     })
 
-    def post(_url, _key, body):
+    def post(_url, _key, body, **kwargs):
         questions = body["questions"]
         target = questions["click_target"]
         assert target["criteria"]["1"]["checked"] == "true"

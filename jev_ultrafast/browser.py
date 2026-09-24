@@ -10,8 +10,9 @@ from browser_harness.admin import ensure_daemon
 from browser_harness.helpers import cdp
 
 # Atomically read visible content and controls, preserving actual DOM node identity.
-READ_STATE = Path(__file__).with_name("snapshot.js").read_text()
+READ_STATE = Path(__file__).with_name("snapshot.js").read_text(encoding="utf-8")
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"
+
 
 class StalePage(ValueError):
     """A decision no longer refers to the observed page."""
@@ -20,9 +21,19 @@ class StalePage(ValueError):
 class Browser:
     def __init__(self, url):
         ensure_daemon()
-        self.target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
-        self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
-        self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
+        self.target = cdp("Target.createTarget", url="about:blank", background=True)[
+            "targetId"
+        ]
+        self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)[
+            "sessionId"
+        ]
+        self.call(
+            "Emulation.setDeviceMetricsOverride",
+            width=1120,
+            height=780,
+            deviceScaleFactor=1,
+            mobile=False,
+        )
         # Keep rAF/menus rendering in an owned background tab, without activating the user's Chrome tab.
         self.call("Emulation.setFocusEmulationEnabled", enabled=True)
         self.call("Page.navigate", url=url)
@@ -36,7 +47,9 @@ class Browser:
         return cdp(method, session_id=self.session, **params)
 
     def evaluate(self, expression):
-        response = self.call("Runtime.evaluate", expression=expression, returnByValue=True)
+        response = self.call(
+            "Runtime.evaluate", expression=expression, returnByValue=True
+        )
         if response.get("exceptionDetails"):
             raise StalePage("Document changed during evaluation")
         return response.get("result", {}).get("value")
@@ -77,7 +90,11 @@ class Browser:
         for attempt in range(10):
             try:
                 return browser_operation(
-                    {"operation": "observe", "session": self.session, "screenshot": screenshot}
+                    {
+                        "operation": "observe",
+                        "session": self.session,
+                        "screenshot": screenshot,
+                    }
                 )
             except StalePage:
                 if attempt == 9:
@@ -102,7 +119,14 @@ class Browser:
             raise StalePage("Page changed since this decision. Observe again.")
         if action["kind"] == "wait":
             time.sleep(0.1)
-        result = browser_operation({"operation": "act", "session": self.session, "action": action, "text": text})
+        result = browser_operation(
+            {
+                "operation": "act",
+                "session": self.session,
+                "action": action,
+                "text": text,
+            }
+        )
         self.after_input = action if action["kind"] != "wait" else None
         return result
 
@@ -128,7 +152,9 @@ def browser_operation(request):
         result = call("Runtime.evaluate", expression=expression, returnByValue=True)
         if result.get("exceptionDetails"):
             if operation == "act" and request["action"]["kind"] == "select":
-                raise RuntimeError("Dropdown execution was interrupted; inspect before retrying.")
+                raise RuntimeError(
+                    "Dropdown execution was interrupted; inspect before retrying."
+                )
             raise StalePage("Document changed during evaluation")
         return result.get("result", {}).get("value")
 
@@ -136,7 +162,14 @@ def browser_operation(request):
         action = request["action"]
         kind = action["kind"]
         if kind == "scroll":
-            call("Input.dispatchMouseEvent", type="mouseWheel", x=550, y=650, deltaX=0, deltaY=action["delta"])
+            call(
+                "Input.dispatchMouseEvent",
+                type="mouseWheel",
+                x=550,
+                y=650,
+                deltaX=0,
+                deltaY=action["delta"],
+            )
         elif kind != "wait":
             if type(action["node"]) is not int:
                 raise ValueError("Invalid observed node")
@@ -160,12 +193,21 @@ def browser_operation(request):
             })(""" + json.dumps(action) + ")")
             if target is None:
                 if kind == "select":
-                    raise RuntimeError("Dropdown execution was not confirmed; inspect before retrying.")
+                    raise RuntimeError(
+                        "Dropdown execution was not confirmed; inspect before retrying."
+                    )
                 raise StalePage("Target changed or is covered. Observe again.")
             if kind != "select":
                 x, y = target["x"], target["y"]
                 for event in ("mousePressed", "mouseReleased"):
-                    call("Input.dispatchMouseEvent", type=event, x=x, y=y, button="left", clickCount=1)
+                    call(
+                        "Input.dispatchMouseEvent",
+                        type=event,
+                        x=x,
+                        y=y,
+                        button="left",
+                        clickCount=1,
+                    )
                 if kind == "fill":
                     call(
                         "Input.dispatchKeyEvent",
@@ -190,5 +232,7 @@ def browser_operation(request):
         raise StalePage("Document is navigating")
     info["fingerprint"] = fingerprint(info)
     if request.get("screenshot", True):
-        info["screenshot"] = call("Page.captureScreenshot", format="jpeg", quality=72)["data"]
+        info["screenshot"] = call("Page.captureScreenshot", format="jpeg", quality=72)[
+            "data"
+        ]
     return info

@@ -23,15 +23,23 @@ AGENT = None
 def load_environment():
     path = Path.cwd() / ".env"
     if path.exists():
-        for line in path.read_text().splitlines():
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
             if "=" in line and not line.startswith("#"):
                 key, value = line.split("=", 1)
                 os.environ.setdefault(key, value)
 
 
 def response_state():
-    state = AGENT.snapshot() if AGENT else {"page": None, "status": "idle", "history": [], "decision": None}
-    return {**state, "text_model": os.environ.get("TEXT_MODEL", "deepseek-chat"), "max_steps": MAX_STEPS}
+    state = (
+        AGENT.snapshot()
+        if AGENT
+        else {"page": None, "status": "idle", "history": [], "decision": None}
+    )
+    return {
+        **state,
+        "text_model": os.environ.get("TEXT_MODEL", "deepseek-chat"),
+        "max_steps": MAX_STEPS,
+    }
 
 
 def close_browser():
@@ -52,12 +60,16 @@ def command(name, body):
             raise ValueError("Enter 1–2,000 characters")
         close_browser()
         AGENT = Agent(
-            "https://www.google.com/travel/flights?hl=en"
-            if scenario == "flights"
-            else f"{ORIGIN}/fixture.html?scenario={scenario}",
+            (
+                "https://www.google.com/travel/flights?hl=en"
+                if scenario == "flights"
+                else f"{ORIGIN}/fixture.html?scenario={scenario}"
+            ),
             goal,
             screenshots=True,
-            record_dir=Path.cwd() / "artifacts" / "frames" if body.get("record") else None,
+            record_dir=(
+                Path.cwd() / "artifacts" / "frames" if body.get("record") else None
+            ),
         )
         AGENT.state["scenario"] = scenario
     else:
@@ -98,7 +110,7 @@ class Handler(BaseHTTPRequestHandler):
         if path not in files:
             return self.send(404, "Not found", "text/plain")
         name, mime = files[path]
-        content = (ROOT / "static" / name).read_text().replace("__TOKEN__", TOKEN)
+        content = (ROOT / "static" / name).read_text(encoding="utf-8").replace("__TOKEN__", TOKEN)
         self.send(200, content, mime + "; charset=utf-8")
 
     def do_POST(self):
@@ -109,7 +121,9 @@ class Handler(BaseHTTPRequestHandler):
         ):
             return self.send(403, json.dumps({"error": "Local demo requests only"}))
         if not LOCK.acquire(blocking=False):
-            return self.send(409, json.dumps({"error": "A browser step is already running"}))
+            return self.send(
+                409, json.dumps({"error": "A browser step is already running"})
+            )
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if not 0 < length < 8192:
@@ -120,7 +134,14 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, RuntimeError, TimeoutError) as error:
             self.send(400, json.dumps({"error": str(error)}))
         except Exception:
-            self.send(500, json.dumps({"error": "Local demo failed; no automatic retry. Reset to recover."}))
+            self.send(
+                500,
+                json.dumps(
+                    {
+                        "error": "Local demo failed; no automatic retry. Reset to recover."
+                    }
+                ),
+            )
         finally:
             LOCK.release()
 
