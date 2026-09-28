@@ -232,7 +232,7 @@ def browser_operation(request):
         raise StalePage("Document is navigating")
     info["fingerprint"] = fingerprint(info)
     if request.get("screenshot", True):
-        info["screenshot"] = call("Page.captureScreenshot", format="jpeg", quality=72)[
-            "data"
-        ]
+        info["screenshot"] = call(
+            "Page.captureScreenshot", format="jpeg", quality=72, _response_timeout=15
+        )["data"]
     return info

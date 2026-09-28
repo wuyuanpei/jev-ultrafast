@@ -25,22 +25,31 @@
             <a href="/demo.mp4" target="_blank" rel="noopener">Watch the original Jev Google Flights run ↗</a>
           </p>
         </div>
-        <div class="model-tag">Laya <span>+ text helper</span></div>
+        <dl class="model-endpoints" aria-label="Model service addresses">
+          <div><dt>Laya</dt><dd id="laya-address">Loading...</dd></div>
+          <div><dt>Text model</dt><dd id="text-model-address">Loading...</dd></div>
+        </dl>
       </section>
       <form id="task-form">
         <div class="task-label">
-          <label for="goal">Give it a task</label
-          ><select id="scenario" name="scenario" aria-label="Demo scenario">
-            <option value="flights">Google Flights · real web</option>
-            <option value="travel">Travel planner · fixture</option>
-            <option value="research">Reading room · fixture</option>
-          </select>
+          <label for="goal">Give it a task</label>
+          <div class="website-controls">
+            <select id="scenario" name="scenario" aria-label="Website preset">
+              <option value="flights">Google Flights · real web</option>
+              <option value="travel">Travel planner · fixture</option>
+              <option value="research">Reading room · fixture</option>
+              <option value="custom">Custom website</option>
+            </select>
+            <input id="website-url" name="url" type="url" aria-label="Target website URL"
+              placeholder="https://example.com" value="https://www.google.com/travel/flights?hl=en"
+              maxlength="2048" required spellcheck="false" autocapitalize="none" />
+          </div>
         </div>
         <div class="task-row">
           <textarea id="goal" name="goal" rows="5">
 Find one-way flights from Zurich to London on September 20, 2026, for one adult in economy. Stop when matching flight options are visible. Do not select or book a flight.</textarea
           ><button type="submit" id="start" class="primary">
-            Start demo <span>↗</span>
+            Start task <span>↗</span>
           </button>
         </div>
       </form>
@@ -126,14 +135,24 @@ Find one-way flights from Zurich to London on September 20, 2026, for one adult 
           <button type="button" id="download" disabled>Export trace ↓</button>
         </div>
         <div id="history">
-          <p class="muted">Each executed action leaves an observed result.</p>
+          <p class="muted">No model calls yet.</p>
         </div>
       </section>
-      <details>
-        <summary>What the model sees</summary>
-        <pre id="model-state">
-Start a demo to inspect its structured state.</pre>
-      </details>
+      <p id="selected-call" class="muted">No call selected</p>
+      <section class="model-io">
+        <details id="model-input-panel" open>
+          <summary>What the model sees</summary>
+          <div id="question-contexts"></div>
+          <details id="raw-request-panel" open>
+            <summary>HTTP request body</summary>
+            <pre id="model-state">No request recorded.</pre>
+          </details>
+        </details>
+        <details id="model-output-panel" open>
+          <summary>What the model outputs</summary>
+          <pre id="model-output">No response recorded.</pre>
+        </details>
+      </section>
       <footer>
         <span>Browser Use × Laya · Local inference</span
         ><span id="helper">Text helper loading</span>

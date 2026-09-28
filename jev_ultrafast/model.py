@@ -4,6 +4,7 @@ import json
 import math
 import os
 import time
+from copy import deepcopy
 
 import httpx
 
@@ -31,6 +32,15 @@ def post_json(url, key, body, *, timeout=25):
             )
         return response.json()
     raise RuntimeError("Model unavailable")
+
+
+def model_request(url, key, body, *, trace=None, **kwargs):
+    if trace is not None:
+        trace.update(request=deepcopy(body), model=body.get("model"))
+    result = post_json(url, key, body, **kwargs)
+    if trace is not None:
+        trace["response"] = deepcopy(result)
+    return result
 
 
 def validate_choice(answer, ids):
@@ -95,7 +105,7 @@ def action_space(actions):
     return elements, targets, controls
 
 
-def choose(state, goal, history):
+def choose(state, goal, history, *, trace=None):
     elements, targets, controls = action_space(state["actions"])
     labels = {
         "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
@@ -138,6 +148,7 @@ def choose(state, goal, history):
         }
     body = {
         "model": os.environ.get("LAYA_MODEL", "laya-v10s"),
+        "include_context": True,
         "state": {
             "page": {k: state[k] for k in ("url", "title", "text")},
             "elements": elements,
@@ -153,8 +164,9 @@ def choose(state, goal, history):
         "/"
     )
 
-    result = post_json(
+    result = model_request(
         base_url + "/v1/systemone", os.environ.get("LAYA_API_KEY", ""), body,
+        trace=trace,
         timeout=float(os.environ.get("LAYA_TIMEOUT_SECONDS", "120")),
     )
     operation_answer = validate_choice(
@@ -206,7 +218,7 @@ def field_context(goal, action, page, history):
     }
 
 
-def field_text(context):
+def field_text(context, *, trace=None):
     key = os.environ.get("TEXT_MODEL_API_KEY")
     if not key:
         raise ValueError(
@@ -224,7 +236,7 @@ def field_text(context):
     if os.environ.get("TEXT_MODEL_REASONING") == "none":
         reasoning = {"reasoning": {"enabled": False}}
     started = time.perf_counter()
-    result = post_json(
+    result = model_request(
         base + "/chat/completions",
         key,
         {
@@ -240,6 +252,7 @@ def field_text(context):
                 },
             ],
         },
+        trace=trace,
     )
     try:
         output = json.loads(result["choices"][0]["message"]["content"])

@@ -65,9 +65,13 @@ uv run jev
 
 Start your Laya systemone server before running `uv run jev`. `LAYA_BASE_URL` is the server origin (default `http://127.0.0.1:8791`, without `/v1/systemone`). `LAYA_TIMEOUT_SECONDS` defaults to 120 for local inference. `LAYA_MODEL` defaults to `laya-v10s`; the server selects its actual checkpoint at startup, not from this request label. `LAYA_API_KEY` is optional. Old `TYPESAFE_MODEL`, `TYPESAFE_BASE_URL`, and `TYPESAFE_API_KEY` settings are no longer used, so an existing `.env` can retain its text-helper settings without routing decisions to Jev.
 
-Open **http://127.0.0.1:8766** and click **Start demo → Run automatically**. The inspector shows numbered elements, operation probabilities, target probabilities, and executed actions. **Choose next** pauses before execution.
+Open **http://127.0.0.1:8766**, enter a target website URL or choose an existing demo preset, and click **Start task → Run automatically**. Selecting a preset fills its URL and example goal; editing the URL preserves your task text. The inspector shows numbered elements, operation probabilities, target probabilities, and executed actions. **Choose next** pauses before execution.
 
 Chrome connects through [Browser Harness](https://github.com/browser-use/browser-harness), installed by `uv sync`. Run `uv run browser-harness --doctor` if it needs connecting. Allow remote debugging in Chrome when prompted.
+
+Decision trail lists Laya and text-helper calls separately, including failed calls. Select a call to inspect its complete request body and formatted response in the two expanded panels. Exported traces include these records, without authentication headers. Traces may contain page content and entered text; review them before sharing.
+
+Laya requests include `include_context: true`. With the updated local systemone server, the input panel shows each question's final tokenized sequence (decoded with special tokens), unpadded token count, sequence limit, and inference pass. The original HTTP request remains separately available. Older servers and historical traces without `question_contexts` show an unavailable notice instead of estimated lengths. Exported responses retain exact token IDs as well as decoded text.
 
 `TEXT_MODEL_API_KEY` is an OpenRouter key in the example configuration. The current demo uses `inception/mercury-2.5` with reasoning disabled. Gemini, GLM, and DeepSeek can also use the OpenAI-compatible text helper; configure the appropriate model, endpoint, and reasoning setting.
 

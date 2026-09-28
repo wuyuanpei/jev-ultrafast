@@ -9,6 +9,11 @@ const goals = {
   research:
     "Open the article about using finite choices to control browser agents.",
 };
+const websites = {
+  flights: "https://www.google.com/travel/flights?hl=en",
+  travel: new URL("/fixture.html?scenario=travel", window.location.origin).href,
+  research: new URL("/fixture.html?scenario=research", window.location.origin).href,
+};
 const escape = (value) =>
   String(value ?? "").replace(
     /[&<>"']/g,
@@ -18,6 +23,39 @@ const escape = (value) =>
       ],
   );
 const percent = (value) => `${(value * 100).toFixed(value < 0.01 ? 1 : 0)}%`;
+let selectedCallId = null;
+function formatPayload(payload) {
+  return JSON.stringify(payload, (key, value) => {
+    if (key === "content" && typeof value === "string") {
+      try { return JSON.parse(value); } catch { /* Plain-text message. */ }
+    }
+    return value;
+  }, 2);
+}
+function renderModelCalls() {
+  const calls = state.model_calls || [];
+  const selected = calls.find(c => c.id === selectedCallId) || calls.at(-1);
+  $("history").innerHTML = calls.length ? calls.map(c =>
+    `<button type="button" class="trace-row ${c.id === selected?.id ? 'active' : ''}" data-call-id="${c.id}" aria-pressed="${c.id === selected?.id}"><span class="number">${String(c.id).padStart(2, '0')}</span><span>${c.kind === 'text' ? 'Text helper' : 'Laya'} <b>${escape(c.operation || c.field || '')}</b><small>${escape(c.model || '')}${c.target ? ' / target '+escape(c.target) : ''}</small></span><span class="time">${c.latency_ms ?? 0} ms</span><span class="call-status ${c.status === 'error' ? 'failed' : ''}">${escape(c.status)}</span></button>`
+  ).join('') : '<p class="muted">No model calls yet.</p>';
+  $("step-count").textContent = `${calls.length} model calls / ${state.history?.length || 0} actions`;
+  $("selected-call").textContent = selected
+    ? `Call ${selected.id} / ${selected.kind === 'text' ? 'Text helper' : 'Laya'} / ${selected.model || selected.status}`
+    : 'No call selected';
+  $("model-state").textContent = selected?.request
+    ? formatPayload(selected.request) : 'No request recorded.';
+  const contexts = selected?.response?.question_contexts;
+  const hasContexts = Array.isArray(contexts) && contexts.length > 0;
+  $("raw-request-panel").open = !hasContexts;
+  $("question-contexts").innerHTML = hasContexts
+    ? `<p class="context-total">${contexts.length} sequences / ${contexts.reduce((n, c) => n + c.input_tokens, 0)} input tokens total</p>` + contexts.map(c =>
+      `<section class="question-context"><h3>${escape(c.question)}</h3><p class="context-metrics">Pass ${escape(c.pass)} / <strong>${escape(c.input_tokens)} / ${escape(c.max_tokens)} tokens</strong></p><pre>${escape(c.context)}</pre></section>`
+    ).join('')
+    : selected?.kind === 'laya' ? '<p class="muted">Per-question context unavailable in this response.</p>' : '';
+  $("model-output").textContent = selected?.error
+    ? formatPayload({ response: selected.response ?? null, error: selected.error })
+    : selected?.response != null ? formatPayload(selected.response) : 'No response recorded.';
+}
 async function call(name, body = {}) {
   const response = await fetch(`/api/${name}`, {
     method: "POST",
@@ -27,6 +65,7 @@ async function call(name, body = {}) {
   const data = await response.json();
   if (!response.ok) throw Error(data.error || "Request failed");
   state = data;
+  if (name === "reset") selectedCallId = null;
   render();
   return data;
 }
@@ -34,13 +73,14 @@ function controls() {
   const live = state?.page && !["done", "blocked"].includes(state.status);
   $("start").disabled = busy;
   $("scenario").disabled = busy;
+  $("website-url").disabled = busy;
   $("goal").disabled = busy;
   $("choose").disabled = busy || !live;
   $("execute").disabled = busy || !state?.decision || !live;
   $("auto").disabled = busy || !live;
   $("auto").hidden = automatic;
   $("stop").hidden = !automatic;
-  $("download").disabled = !state?.history?.length;
+  $("download").disabled = !state?.model_calls?.length && !state?.history?.length;
 }
 async function perform(fn, label) {
   if (busy) return;
@@ -68,6 +108,8 @@ async function perform(fn, label) {
 }
 function render() {
   if (!state) return;
+  $("laya-address").textContent = state.laya_base_url || "Unavailable";
+  $("text-model-address").textContent = state.text_model_base_url || "Unavailable";
   $("helper").textContent = `Text helper · ${state.text_model}`;
   $("plan").innerHTML = (state.plan || [])
     .map(
@@ -87,6 +129,7 @@ function render() {
     blocked: "Stopped · no supported next action",
   };
   $("status").textContent = labels[state.status] || state.status;
+  renderModelCalls();
   if (!page) {
     controls();
     return;
@@ -124,38 +167,41 @@ function render() {
     return `<div class="target ${index === selectedIndex ? 'selected' : ''}" data-action="${index}" style="left:${100*a.rect.x/page.w}%;top:${100*a.rect.y/page.h}%;width:${100*a.rect.w/page.w}%;height:${100*a.rect.h/page.h}%"><span>${index}</span></div>`;
   }).join('');
   $("targets").hidden = !$("overlays").checked;
-  $("history").innerHTML = state.history.length
-    ? state.history
-        .map(
-          (h) =>
-            `<div class="trace-row"><span class="number">${String(h.step).padStart(2, "0")}</span><div>${escape(h.action)}${h.text ? ` <b>“${escape(h.text)}”</b><small>${escape(h.text_helper)}</small>` : ""}</div><span class="time">${h.latency_ms} ms · ${percent(h.probability)}</span><span class="effect">${h.page_changed ? "Page changed" : "No change observed"}</span></div>`,
-        )
-        .join("")
-    : '<p class="muted">Each executed action leaves an observed result.</p>';
-  $("step-count").textContent = `${state.history.length} actions · ${(state.elapsed_ms / 1000).toFixed(2)} s`;
-  $("model-state").textContent = JSON.stringify(
-    d?.request || {
-      goal: state.goal,
-      url: page.url,
-      text: page.text,
-      actions: page.actions.map(({ rect, node, ...rest }) => rest),
-    },
-    null,
-    2,
-  );
   controls();
 }
+$("history").addEventListener("click", (event) => {
+  const row = event.target.closest("[data-call-id]");
+  if (!row) return;
+  selectedCallId = Number(row.dataset.callId);
+  renderModelCalls();
+  $("model-input-panel").open = true;
+  $("model-output-panel").open = true;
+});
 $("task-form").addEventListener("submit", (event) => {
   event.preventDefault();
   automatic = false;
   perform(
     () =>
-      call("reset", { scenario: $("scenario").value, goal: $("goal").value }),
+      call("reset", {
+        scenario: $("scenario").value,
+        url: $("website-url").value.trim(),
+        goal: $("goal").value,
+      }),
     "Opening a fresh browser…",
   );
 });
 $("scenario").addEventListener("change", () => {
-  $("goal").value = goals[$("scenario").value];
+  const scenario = $("scenario").value;
+  if (websites[scenario]) {
+    $("website-url").value = websites[scenario];
+    $("goal").value = goals[scenario];
+  } else {
+    $("website-url").focus();
+  }
+});
+$("website-url").addEventListener("input", () => {
+  const url = $("website-url").value.trim();
+  $("scenario").value = Object.keys(websites).find(key => websites[key] === url) || "custom";
 });
 $("choose").addEventListener("click", () =>
   perform(() => call("predict"), "Jev is comparing the actions…"),
@@ -241,4 +287,6 @@ fetch("/api/state")
   })
   .catch(() => {
     $("status").textContent = "Cannot reach local demo server";
+    $("laya-address").textContent = "Unavailable";
+    $("text-model-address").textContent = "Unavailable";
   });

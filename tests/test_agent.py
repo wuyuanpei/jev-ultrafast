@@ -237,6 +237,7 @@ def test_generated_text_reused_only_for_identical_retry_context(runner, monkeypa
     runner.state["decision"] = decision()
     runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
     assert helper.call_count == 1
+    assert len(runner.state["model_calls"]) == 1
     assert runner.state["browser"].act.call_count == 2  # The first call rejects before any browser input.
     assert runner.pending_text is None
 
@@ -359,4 +360,47 @@ def test_navigation_during_prediction_reobserves_without_action(runner):
     runner.command("tick")
     assert runner.state["status"] == "ready"
     assert runner.state["decision"] is None
+    runner.state["browser"].act.assert_not_called()
+
+
+def test_trace_keeps_separate_complete_model_calls(runner, monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "secret-test-key")
+    laya = {"model": "laya", "answers": {
+        "operation": choice(["TYPE_TEXT", "CLICK", "WAIT", "DONE", "BLOCKED"], "TYPE_TEXT"),
+        "type_text_target": choice(["1"], "1"),
+    }}
+    helper = {"choices": [{"message": {"content": '{"text":"book"}'}}], "usage": {"total_tokens": 5}}
+    post = Mock(side_effect=[laya, helper])
+    monkeypatch.setattr(model, "post_json", post)
+    runner.command("tick")
+    calls = runner.snapshot()["model_calls"]
+    assert [c["kind"] for c in calls] == ["laya", "text"]
+    assert [c["id"] for c in calls] == [1, 2]
+    assert all(c["status"] == "success" for c in calls)
+    assert calls[0]["request"] == post.call_args_list[0].args[2]
+    assert calls[1]["request"] == post.call_args_list[1].args[2]
+    assert calls[0]["response"] == laya
+    assert calls[1]["response"] == helper
+    assert calls[1]["request"]["messages"][0]["content"] == model.TEXT_VALUE
+    assert json.loads(calls[1]["request"]["messages"][1]["content"])["goal"] == "Find a book"
+    assert "secret-test-key" not in json.dumps(calls)
+    laya["answers"].clear()
+    runner.state["page"]["text"] = "changed"
+    assert calls[0]["response"]["answers"]
+    assert calls[0]["request"]["state"]["page"]["text"] == "Search"
+
+
+@pytest.mark.parametrize("network_error", [False, True])
+def test_failed_helper_trace_preserves_request_and_response(runner, monkeypatch, network_error):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    raw = {"choices": [{"message": {"content": '{"text":null}'}}]}
+    post = Mock(side_effect=RuntimeError("Connection failed")) if network_error else Mock(return_value=raw)
+    monkeypatch.setattr(model, "post_json", post)
+    with pytest.raises((ValueError, RuntimeError)):
+        runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    record = runner.state["model_calls"][0]
+    assert record["status"] == "error"
+    assert record["request"]["messages"]
+    assert record.get("response") == (None if network_error else raw)
+    assert record["error"]
     runner.state["browser"].act.assert_not_called()

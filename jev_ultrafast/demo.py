@@ -38,6 +38,8 @@ def response_state():
     return {
         **state,
         "text_model": os.environ.get("TEXT_MODEL", "deepseek-chat"),
+        "laya_base_url": os.environ.get("LAYA_BASE_URL", "http://127.0.0.1:8791").rstrip("/"),
+        "text_model_base_url": os.environ.get("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1").rstrip("/"),
         "max_steps": MAX_STEPS,
     }
 
@@ -53,18 +55,36 @@ def command(name, body):
     global AGENT
     if name == "reset":
         scenario = body.get("scenario", "flights")
-        if scenario not in {"travel", "research", "flights"}:
+        if scenario not in {"travel", "research", "flights", "custom"}:
             raise ValueError("Unknown demo scenario")
         goal = body.get("goal", "").strip()
         if not goal or len(goal) > 2000:
             raise ValueError("Enter 1–2,000 characters")
+        default_url = (
+            "https://www.google.com/travel/flights?hl=en"
+            if scenario == "flights"
+            else f"{ORIGIN}/fixture.html?scenario={scenario}" if scenario != "custom" else ""
+        )
+        url = body.get("url", default_url)
+        if not isinstance(url, str):
+            raise ValueError("Enter a valid http:// or https:// website URL")
+        url = url.strip()
+        try:
+            parsed = urlparse(url)
+            valid_url = (
+                0 < len(url) <= 2048
+                and parsed.scheme in {"http", "https"}
+                and bool(parsed.hostname)
+                and not any(char.isspace() or ord(char) < 32 for char in url)
+            )
+            parsed.port  # Reject malformed port numbers before replacing the current task.
+        except ValueError:
+            valid_url = False
+        if not valid_url:
+            raise ValueError("Enter a valid http:// or https:// website URL (up to 2,048 characters)")
         close_browser()
         AGENT = Agent(
-            (
-                "https://www.google.com/travel/flights?hl=en"
-                if scenario == "flights"
-                else f"{ORIGIN}/fixture.html?scenario={scenario}"
-            ),
+            url,
             goal,
             screenshots=True,
             record_dir=(

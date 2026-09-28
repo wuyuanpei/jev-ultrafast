@@ -35,6 +35,7 @@ class Agent:
             plan_index=0,
             decisions=[],
             text_calls=[],
+            model_calls=[],
             elapsed_ms=0,
             started_at=None,
             record=bool(self.record_dir),
@@ -48,6 +49,23 @@ class Agent:
             **{k: v for k, v in self.state.items() if k != "browser"},
             "elements": action_space(self.state["page"]["actions"])[0],
         }
+
+    def call_model(self, kind, function, *args, **metadata):
+        calls = self.state.setdefault("model_calls", [])
+        record = dict(id=len(calls) + 1, kind=kind, status="pending", **metadata)
+        calls.append(record)
+        started = time.perf_counter()
+        try:
+            result = function(*args, trace=record)
+            record["status"] = "success"
+            if kind == "laya":
+                record.update(operation=result["operation"], target=result["target"])
+            return result
+        except Exception as error:
+            record.update(status="error", error=str(error))
+            raise
+        finally:
+            record["latency_ms"] = round((time.perf_counter() - started) * 1000)
 
     def command(self, name, body=None):
         body = body or {}
@@ -74,7 +92,9 @@ class Agent:
                 raise ValueError("This run has stopped. Start a fresh demo.")
             if len(state["decisions"]) >= MAX_STEPS * 2:
                 raise ValueError("Reached the demo's model-call budget")
-            state["decision"] = choose(state["page"], state["goal"], state["history"])
+            state["decision"] = self.call_model(
+                "laya", choose, state["page"], state["goal"], state["history"]
+            )
             state["decisions"].append(
                 {
                     **state["decision"],
@@ -110,7 +130,9 @@ class Agent:
                 if self.pending_text and self.pending_text[0] == context:
                     _, text, helper = self.pending_text
                 else:
-                    text, helper = field_text(context)
+                    text, helper = self.call_model(
+                        "text", field_text, context, field=action["label"]
+                    )
                     self.pending_text = (context, text, helper)
                     state["text_calls"].append({**helper, "field": action["label"], "value": text})
             # Browser.act checks freshness immediately before input, including after text generation.
