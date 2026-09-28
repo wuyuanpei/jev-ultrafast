@@ -27,7 +27,7 @@ assert.equal(JSON.parse(element('model-output').textContent).answers.operation, 
 assert.equal(element('model-input-panel').open, true);
 assert.equal(element('model-output-panel').open, true);
 context.fixture.model_calls[0].response.question_contexts = [
-  { question: 'operation', pass: 1, input_tokens: 800, max_tokens: 1024, context: '[CLS] <unsafe> operation' },
+  { question: 'operation', pass: 1, input_tokens: 800, max_tokens: 1024, token_ids: [1, 2], context: '[CLS] <unsafe> operation' },
   { question: 'click_target', pass: 1, input_tokens: 1024, max_tokens: 1024, context: '[CLS] click only' },
   { question: 'click_target', pass: 2, input_tokens: 200, max_tokens: 1024, context: '[CLS] final' },
 ];
@@ -37,6 +37,13 @@ assert.match(element('question-contexts').innerHTML, /800 \/ 1024 tokens/);
 assert.match(element('question-contexts').innerHTML, /Pass 2/);
 assert.match(element('question-contexts').innerHTML, /&lt;unsafe&gt;/);
 assert.equal(element('raw-request-panel').open, false);
+assert.deepEqual(JSON.parse(element('model-output').textContent), { answers: { operation: 'CLICK' } });
+assert.deepEqual(context.fixture.model_calls[0].response.question_contexts[0].token_ids, [1, 2]);
+context.fixture.model_calls[0].error = 'Invalid answer';
+vm.runInContext('render()', context);
+assert.equal(JSON.parse(element('model-output').textContent).error, 'Invalid answer');
+assert.equal(JSON.parse(element('model-output').textContent).response.question_contexts, undefined);
+delete context.fixture.model_calls[0].error;
 context.fixture.model_calls.push({ id: 3, kind: 'laya', status: 'success', request: { text: 'third' } });
 vm.runInContext('render()', context);
 assert.equal(JSON.parse(element('model-state').textContent).state.text, 'first');

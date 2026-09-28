@@ -52,9 +52,12 @@ function renderModelCalls() {
       `<section class="question-context"><h3>${escape(c.question)}</h3><p class="context-metrics">Pass ${escape(c.pass)} / <strong>${escape(c.input_tokens)} / ${escape(c.max_tokens)} tokens</strong></p><pre>${escape(c.context)}</pre></section>`
     ).join('')
     : selected?.kind === 'laya' ? '<p class="muted">Per-question context unavailable in this response.</p>' : '';
+  const output = selected?.kind === 'laya' && selected.response != null
+    ? Object.fromEntries(Object.entries(selected.response).filter(([key]) => key !== 'question_contexts'))
+    : selected?.response;
   $("model-output").textContent = selected?.error
-    ? formatPayload({ response: selected.response ?? null, error: selected.error })
-    : selected?.response != null ? formatPayload(selected.response) : 'No response recorded.';
+    ? formatPayload({ response: output ?? null, error: selected.error })
+    : output != null ? formatPayload(output) : 'No response recorded.';
 }
 async function call(name, body = {}) {
   const response = await fetch(`/api/${name}`, {
