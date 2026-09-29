@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from .browser import Browser, StalePage
-from .model import action_space, choose, field_context, field_text
+from .model import action_space, choose, field_context, field_text, system1_config
 from .questions import MAX_STEPS
 
 
@@ -15,11 +15,12 @@ class RunCancelled(RuntimeError):
 
 class Agent:
     def __init__(self, url, goals, *, record_dir=None, screenshots=False,
-                 on_event=None, should_cancel=None, prepare=None):
+                 on_event=None, should_cancel=None, prepare=None, system1_provider=None):
         task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
         if not task:
             raise ValueError("Supply a task")
         plan = [task]
+        config = system1_config(system1_provider, require_key=True)
         self.pending_text = None
         self.on_event = on_event
         self.should_cancel = should_cancel
@@ -36,6 +37,9 @@ class Agent:
             raise
         self.state = dict(
             browser=self.browser,
+            system1_provider=config["provider"],
+            system1_model=config["model"],
+            system1_base_url=config["base_url"],
             goal="\n".join(plan),
             page=page,
             decision=None,
@@ -44,6 +48,7 @@ class Agent:
             plan=plan,
             plan_index=0,
             decisions=[],
+            decision_rounds=0,
             text_calls=[],
             model_calls=[],
             elapsed_ms=0,
@@ -69,6 +74,12 @@ class Agent:
         callback = getattr(self, "on_event", None)
         if callback:
             callback(event, self, payload)
+        elif event == "observation":
+            page = self.state["page"]
+            self.state.setdefault("observations", []).append({
+                "page": page, "phase": payload.get("phase"), "step": len(self.state["history"]),
+                "elements": action_space(page["actions"])[0],
+            })
 
     def observe(self, phase="step"):
         self.state["page"] = self.state["browser"].observe(screenshot=self.screenshots)
@@ -83,20 +94,28 @@ class Agent:
     def call_model(self, kind, function, *args, **metadata):
         calls = self.state.setdefault("model_calls", [])
         record = dict(id=len(calls) + 1, kind=kind, status="pending", **metadata)
+        if self.state.get("observations"):
+            record["observation_index"] = len(self.state["observations"]) - 1
         calls.append(record)
         started = time.perf_counter()
         self.emit("model_start", call=record)
         try:
             result = function(*args, trace=record)
             record["status"] = "success"
-            if kind == "laya":
+            if kind in {"laya", "deepseek"}:
                 record.update(operation=result["operation"], target=result["target"])
+                record["decision"] = {k: result.get(k) for k in (
+                    "choice", "operation", "target", "confidence", "target_confidence", "latency_ms",
+                    "operation_probabilities", "target_probabilities", "provider",
+                )}
             return result
         except Exception as error:
             record.update(status="error", error=str(error))
             raise
         finally:
             record["latency_ms"] = round((time.perf_counter() - started) * 1000)
+            if "decision" in record:
+                record["decision"]["latency_ms"] = record["latency_ms"]
             self.emit("model_end", call=record)
 
     def command(self, name, body=None):
@@ -124,11 +143,26 @@ class Agent:
             state["decision"] = None
             if state["status"] in {"done", "blocked"}:
                 raise ValueError("This run has stopped. Start a fresh demo.")
-            if len(state["decisions"]) >= MAX_STEPS * 2:
-                raise ValueError("Reached the demo's model-call budget")
-            state["decision"] = self.call_model(
-                "laya", choose, state["page"], state["goal"], state["history"]
-            )
+            rounds = state.get("decision_rounds", len(state["decisions"]))
+            if rounds >= MAX_STEPS * 2:
+                raise ValueError("Reached the demo's decision-round budget")
+            state["decision_rounds"] = rounds + 1
+            provider = state.get("system1_provider", "laya")
+            def stage_call(function, question):
+                self.check_cancelled()
+                if not state["browser"].fresh(state["page"]):
+                    raise StalePage("Page changed between decision stages. Choose again.")
+                return self.call_model("deepseek", function, question,
+                                       decision_round=rounds + 1, stage=question)
+
+            if provider == "deepseek":
+                decision = choose(state["page"], state["goal"], state["history"],
+                                  provider=provider, stage_call=stage_call)
+            else:
+                decision = self.call_model(provider, choose, state["page"], state["goal"], state["history"],
+                                           decision_round=rounds + 1)
+            self.check_cancelled()
+            state["decision"] = decision
             state["decisions"].append(
                 {
                     **state["decision"],
@@ -165,7 +199,10 @@ class Agent:
                     _, text, helper = self.pending_text
                 else:
                     text, helper = self.call_model(
-                        "text", field_text, context, field=action["label"]
+                        "text", field_text, context, field=action["label"],
+                        decision_round=state.get("decision_rounds"),
+                        decision_call_id=next((c["id"] for c in reversed(state.get("model_calls", []))
+                                               if c["kind"] in {"laya", "deepseek"}), None),
                     )
                     self.pending_text = (context, text, helper)
                     state["text_calls"].append({**helper, "field": action["label"], "value": text})
@@ -186,7 +223,7 @@ class Agent:
                     "role": action.get("role"),
                     "previous_value": action.get("value"),
                     "previous_checked": action.get("checked"),
-                    "probability": decision["probabilities"][selected],
+                    "probability": decision["probabilities"].get(selected),
                     "confidence": decision["confidence"],
                     "latency_ms": decision["latency_ms"],
                     "text": text,

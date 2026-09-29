@@ -122,4 +122,53 @@ delete context.fixture.observations[3].screenshot_url;
 run('render()');
 element('overlays').listeners.change();
 assert.equal(element('targets').hidden, true, 'no boxes floating over missing screenshot');
+context.fixture.model_calls.push({ id: 6, observation_index: 0, kind: 'deepseek', status: 'success', model: 'deepseek-flash',
+  operation: 'CLICK', target: '2', decision_input: { state: { elements: context.fixture.model_calls[0].request.state.elements } },
+  request: { messages: [{ role: 'user', content: '{"state":{},"questions":{}}' }] },
+  response: { choices: [{ message: { content: '{"operation":"CLICK","click_target":"2"}' } }] },
+  decision: { provider: 'deepseek', operation: 'CLICK', target: '2', choice: 'e2',
+    operation_probabilities: {}, target_probabilities: {}, target_confidence: null, latency_ms: 20 },
+});
+selectCall(6);
+assert.equal(element('observation-step').value, '0');
+assert.match(element('selected-call').textContent, /DeepSeek \(System1\)/);
+assert.match(element('ranking-note').textContent, /概率未提供/);
+assert.equal(element('operation-choices').innerHTML, '');
+assert.equal(element('confidence').textContent, '—');
+assert.equal(element('choice-title').textContent, 'Input');
+assert.match(element('choices').innerHTML, /choice best" data-action="2"/);
+assert.doesNotMatch(element('choices').innerHTML, /100%/);
+assert.match(element('question-contexts').innerHTML, /questions/);
+context.fixture.model_calls.push({ id: 7, observation_index: 0, decision_call_id: 6,
+  kind: 'text', status: 'success', request: {}, response: { text: 'helper' } });
+selectCall(7);
+assert.equal(element('choice-title').textContent, 'Input');
+assert.match(element('ranking-note').textContent, /DeepSeek/);
+assert.equal(JSON.parse(element('model-output').textContent).text, 'helper');
+const cloudCall = context.fixture.model_calls.find(c => c.id === 6);
+context.fixture.model_calls.push({ ...cloudCall, id: 8, decision_round: 2, stage: 'operation', target: null,
+  decision: { ...cloudCall.decision, target: null, choice: 'CLICK' },
+  response: { choices: [{ message: { content: '{"operation":"CLICK"}' } }] },
+});
+selectCall(8);
+assert.match(element('question-contexts').innerHTML, /操作选择/);
+assert.match(element('question-contexts').innerHTML, /目标调用尚未发出/);
+assert.doesNotMatch(element('choices').innerHTML, /choice best/);
+context.fixture.model_calls.push({ ...cloudCall, id: 9, decision_round: 2, stage: 'click_target' });
+run('render()');
+assert.equal(element('choice-title').textContent, 'Input');
+assert.match(element('stage-requests').innerHTML, /messages/);
+assert.match(element('stage-outputs').innerHTML, /click_target/);
+assert.equal(element('model-state').hidden, true);
+selectCall(9);
+assert.equal(element('observation-step').value, '0');
+assert.equal(element('choice-title').textContent, 'Input');
+context.fixture.model_calls.push({ ...cloudCall, id: 10, decision_round: 3, stage: 'operation', operation: 'DONE',
+  decision: { ...cloudCall.decision, operation: 'DONE', target: null, choice: 'DONE' },
+});
+selectCall(10);
+assert.match(element('question-contexts').innerHTML, /该操作无需目标调用/);
+selectCall(7);
+assert.equal(element('stage-outputs').hidden, true);
+assert.equal(element('model-output').hidden, false);
 console.log('Inspector linkage tests passed');

@@ -5,12 +5,77 @@ import math
 import os
 import time
 from copy import deepcopy
+from urllib.parse import urlsplit
 
 import httpx
 
+from .laya_context import choice_context
 from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
+
+
+def system1_config(provider=None, *, require_key=False):
+    provider = os.getenv("SYSTEM1_PROVIDER", "laya") if provider is None else provider
+    if provider not in ("laya", "deepseek"):
+        raise ValueError("System1 must be laya or deepseek")
+    if provider == "laya":
+        return {"provider": provider, "model": os.getenv("LAYA_MODEL", "laya-v10s"),
+                "base_url": os.getenv("LAYA_BASE_URL", "http://127.0.0.1:8791").rstrip("/"),
+                "timeout": float(os.getenv("LAYA_TIMEOUT_SECONDS", "120"))}
+    if require_key and not deepseek_key():
+        raise ValueError("System1 DeepSeek needs SYSTEM1_DEEPSEEK_API_KEY or a DeepSeek TEXT_MODEL_API_KEY")
+    return {"provider": provider, "model": os.getenv("SYSTEM1_DEEPSEEK_MODEL") or "deepseek-flash",
+            "base_url": (os.getenv("SYSTEM1_DEEPSEEK_BASE_URL") or "https://api.deepseek.com/v1").rstrip("/"),
+            "timeout": float(os.getenv("SYSTEM1_DEEPSEEK_TIMEOUT_SECONDS") or "60")}
+
+
+def deepseek_key():
+    key = os.getenv("SYSTEM1_DEEPSEEK_API_KEY")
+    if key:
+        return key
+    text_host = urlsplit(os.getenv("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1")).hostname
+    decision_host = urlsplit(os.getenv("SYSTEM1_DEEPSEEK_BASE_URL") or "https://api.deepseek.com/v1").hostname
+    return os.getenv("TEXT_MODEL_API_KEY", "") if text_host == decision_host == "api.deepseek.com" else ""
+
+
+def deepseek_choices(body, trace):
+    config = system1_config("deepseek", require_key=True)
+    context = choice_context(body)
+    question = context["question"]
+    if trace is not None:
+        trace["decision_input"] = deepcopy({key: context[key] for key in ("state", "questions")})
+        trace["indexed_elements"] = deepcopy(body["state"].get("elements", []))
+        trace["laya_context"] = {key: value for key, value in context.items() if key not in {"state", "questions"}}
+    result = model_request(config["base_url"] + "/chat/completions", deepseek_key(), {
+        "model": config["model"], "thinking": {"type": "disabled"}, "temperature": 0,
+        "max_tokens": 1024, "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": (
+                f'Return only a JSON object with exactly one key "{question}" '
+                'and a string value containing the chosen option key. No additional fields or text.'
+            )},
+            {"role": "user", "content": context["context"]},
+        ],
+    }, trace=trace, timeout=config["timeout"])
+    try:
+        completion = result["choices"][0]
+        if completion.get("finish_reason") not in (None, "stop"):
+            raise ValueError()
+        choices = json.loads(completion["message"]["content"])
+        if not isinstance(choices, dict) or not set(choices) <= set(body["questions"]):
+            raise ValueError()
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise ValueError("Invalid DeepSeek choice JSON; no action executed.") from None
+    return {"model": result.get("model", config["model"]),
+            "answers": {key: {"choice": value} for key, value in choices.items()},
+            "usage": result.get("usage", {})}
+
+
+def validate_selection(answer, ids):
+    if not isinstance(answer, dict) or not isinstance(answer.get("choice"), str) or answer["choice"] not in ids:
+        raise ValueError("Invalid DeepSeek choice; no action executed.")
+    return answer
 
 
 def post_json(url, key, body, *, timeout=25):
@@ -105,7 +170,8 @@ def action_space(actions):
     return elements, targets, controls
 
 
-def choose(state, goal, history, *, trace=None):
+def choose(state, goal, history, *, trace=None, provider="laya", stage_call=None):
+    config = system1_config(provider)
     elements, targets, controls = action_space(state["actions"])
     labels = {
         "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
@@ -147,7 +213,7 @@ def choose(state, goal, history, *, trace=None):
             },
         }
     body = {
-        "model": os.environ.get("LAYA_MODEL", "laya-v10s"),
+        "model": config["model"],
         "include_context": True,
         "state": {
             "page": {k: state[k] for k in ("url", "title", "text")},
@@ -164,12 +230,42 @@ def choose(state, goal, history, *, trace=None):
         "/"
     )
 
-    result = model_request(
-        base_url + "/v1/systemone", os.environ.get("LAYA_API_KEY", ""), body,
-        trace=trace,
-        timeout=float(os.environ.get("LAYA_TIMEOUT_SECONDS", "120")),
-    )
-    operation_answer = validate_choice(
+    if provider == "deepseek":
+        def request_stage(question, *, trace=None):
+            stage_body = {**body, "questions": {question: questions[question]}}
+            result = deepseek_choices(stage_body, trace)
+            answer = validate_selection(result["answers"].get(question), questions[question]["criteria"])
+            op = answer["choice"] if question == "operation" else operation
+            target = None if question == "operation" else answer["choice"]
+            choice = (targets[op][target]["id"] if target else
+                      controls[op]["id"] if op in controls else op)
+            return {**result, "operation": op, "target": target, "choice": choice,
+                    "provider": "deepseek", "operation_probabilities": {}, "target_probabilities": {}}
+
+        def invoke(question):
+            if stage_call:
+                return stage_call(request_stage, question)
+            record = {}
+            if trace is not None:
+                trace.setdefault("stages", []).append(record)
+            return request_stage(question, trace=record)
+
+        result = invoke("operation")
+        operation = result["operation"]
+        if operation in targets:
+            target_result = invoke(operation.lower() + "_target")
+            result["answers"].update(target_result["answers"])
+            result["usage"] = {key: result["usage"].get(key, 0) + target_result["usage"].get(key, 0)
+                               for key in result["usage"].keys() | target_result["usage"].keys()
+                               if isinstance(result["usage"].get(key, 0), (int, float))
+                               and isinstance(target_result["usage"].get(key, 0), (int, float))}
+    else:
+        result = model_request(
+            base_url + "/v1/systemone", os.environ.get("LAYA_API_KEY", ""), body,
+            trace=trace, timeout=config["timeout"],
+        )
+    validate = validate_choice if provider == "laya" else validate_selection
+    operation_answer = validate(
         result["answers"].get("operation", {}), operations
     )
     operation = operation_answer["choice"]
@@ -178,7 +274,7 @@ def choose(state, goal, history, *, trace=None):
     probabilities = {}
     if operation in targets:
         # Unused target heads cannot cause an action. Validate the head selected by the operation.
-        target_answer = validate_choice(
+        target_answer = validate(
             result["answers"].get(operation.lower() + "_target", {}), targets[operation]
         )
         target = target_answer["choice"]
@@ -186,19 +282,21 @@ def choose(state, goal, history, *, trace=None):
         probabilities = {
             a["id"]: target_answer["probabilities"][index]
             for index, a in targets[operation].items()
-        }
+        } if "probabilities" in target_answer else {}
     else:
         choice = controls[operation]["id"] if operation in controls else operation
-        probabilities[choice] = operation_answer["probabilities"][operation]
+        if "probabilities" in operation_answer:
+            probabilities[choice] = operation_answer["probabilities"][operation]
     return {
         "choice": choice,
         "operation": operation,
         "target": target,
-        "confidence": operation_answer["confidence"],
+        "provider": provider,
+        "confidence": operation_answer.get("confidence"),
         "probabilities": probabilities,
-        "operation_probabilities": operation_answer["probabilities"],
-        "target_probabilities": target_answer["probabilities"] if target_answer else {},
-        "target_confidence": target_answer["confidence"] if target_answer else None,
+        "operation_probabilities": operation_answer.get("probabilities", {}),
+        "target_probabilities": target_answer.get("probabilities", {}) if target_answer else {},
+        "target_confidence": target_answer.get("confidence") if target_answer else None,
         "raw_answers": result["answers"],
         "model": result["model"],
         "usage": result.get("usage", {}),

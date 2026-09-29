@@ -17,7 +17,7 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from .agent import Agent, RunCancelled
 from .baseline_tasks import VERSION, inspect, prepare, task_catalog
-from .model import action_space
+from .model import action_space, system1_config
 from .questions import MAX_STEPS
 
 TERMINAL = {"completed", "cancelled", "error", "interrupted"}
@@ -77,7 +77,7 @@ class BaselineManager:
         if isinstance(data, list):
             return [self.clean(v) for v in data]
         if isinstance(data, str):
-            for key in ("LAYA_API_KEY", "TEXT_MODEL_API_KEY"):
+            for key in ("LAYA_API_KEY", "TEXT_MODEL_API_KEY", "SYSTEM1_DEEPSEEK_API_KEY"):
                 secret = os.environ.get(key)
                 if secret:
                     data = data.replace(secret, "[REDACTED]")
@@ -154,6 +154,7 @@ class BaselineManager:
             }
         row = next(r for r in self.read_run(run_id)["attempts"] if r["id"] == attempt_id)
         snapshot["baseline_attempt"] = row
+        snapshot.setdefault("system1_provider", row.get("system1_provider", "laya"))
         frames = snapshot.get("observations", [])
         calls = {call["id"]: call for call in snapshot.get("model_calls", [])}
         if (any("page" not in frame for frame in frames)
@@ -177,10 +178,12 @@ class BaselineManager:
                             call = calls.get(event.get("call", {}).get("id"))
                             if call is not None:
                                 call.setdefault("observation_index", index if 0 <= index < len(frames) else None)
-                                if call["kind"] == "laya":
+                                if call["kind"] in {"laya", "deepseek"}:
                                     laya_id = call["id"]
                                 else:
-                                    call.setdefault("laya_call_id", laya_id)
+                                    call.setdefault("decision_call_id", laya_id)
+                                    if calls.get(laya_id, {}).get("kind") == "laya":
+                                        call.setdefault("laya_call_id", laya_id)
         for frame in frames:
             if frame.get("page"):
                 frame.setdefault("elements", action_space(frame["page"].get("actions", []))[0])
@@ -195,7 +198,8 @@ class BaselineManager:
             raise ValueError("Unknown screenshot")
         return path.read_bytes()
 
-    def start(self, task_ids=None, repeats=1):
+    def start(self, task_ids=None, repeats=1, system1_provider=None):
+        config = system1_config(system1_provider, require_key=True)
         ids = [t["id"] for t in self.tasks] if task_ids is None else task_ids
         allowed = {t["id"] for t in self.tasks}
         if (not isinstance(ids, list) or not ids or any(not isinstance(i, str) for i in ids)
@@ -219,11 +223,12 @@ class BaselineManager:
             run_id = candidate
             tasks = [t for t in self.tasks if t["id"] in ids]
             attempts = [dict(id=f"{t['id']}/attempt-{n:02}", task_id=t["id"], name=t["name"],
-                             repeat=n, status="queued", actions=0, laya_calls=0, text_calls=0,
+                             repeat=n, status="queued", actions=0, laya_calls=0, deepseek_calls=0,
+                             decision_calls=0, decision_rounds=0, system1_provider=config["provider"], text_calls=0,
                              elapsed_ms=0, reason="", evaluation=None)
                         for t in tasks for n in range(1, repeats + 1)]
             self.batch = dict(id=run_id, status="running", path=str(self.folder(run_id)),
-                              created_at=now(), suite_version=VERSION, attempts=attempts)
+                              created_at=now(), suite_version=VERSION, attempts=attempts, system1=config)
             self.snapshots = {}
             self.stop_event.clear()
             self.active = True
@@ -233,7 +238,10 @@ class BaselineManager:
                        if p.suffix in {".py", ".js", ".html"} and "__pycache__" not in p.parts}
             manifest = {"run_id": run_id, "created_at": self.batch["created_at"], "suite_version": VERSION,
                         "tasks": tasks, "repeats": repeats, "sources_sha256": sources,
-                        "limits": {"actions": MAX_STEPS, "laya_calls": MAX_STEPS * 2, "seconds": self.timeout},
+                        "limits": {"actions": MAX_STEPS, "decision_rounds": MAX_STEPS * 2,
+                                   "decision_calls": MAX_STEPS * (4 if config["provider"] == "deepseek" else 2),
+                                   "seconds": self.timeout},
+                        "system1": {**config, "base_url": public_endpoint(config["base_url"])},
                         "viewport": {"width": 1120, "height": 780}, "shared_browser_profile": True,
                         "models": {k: os.environ.get(k, default) for k, default in (
                             ("LAYA_MODEL", "laya-v10s"), ("TEXT_MODEL", "deepseek-chat"),
@@ -267,7 +275,8 @@ class BaselineManager:
         batch["counts"] = dict(counts)
         batch["success_rate"] = counts["passed"] / max(1, len(batch["attempts"]))
         atomic_json(folder / "summary.json", self.clean(batch))
-        fields = ["task_id", "repeat", "status", "actions", "laya_calls", "text_calls", "elapsed_ms", "reason"]
+        fields = ["task_id", "repeat", "status", "system1_provider", "actions", "decision_rounds", "decision_calls",
+                  "laya_calls", "deepseek_calls", "text_calls", "elapsed_ms", "reason"]
         output = io.StringIO(newline="")
         writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
@@ -276,10 +285,13 @@ class BaselineManager:
         report = ["# 基线运行结果", "", f"批次：{batch['id']}", f"状态：{batch['status']}",
                   f"通过：{counts['passed']} / {len(batch['attempts'])}（包含阻塞和取消的计划次数）", "",
                   f"总成功率：{batch['success_rate']:.1%}；环境阻塞：{counts['environment_blocked']} 次", "",
-                  "| 任务 | 轮次 | 状态 | 动作 | Laya / 文本 | 耗时(ms) |", "|---|---:|---|---:|---:|---:|"]
+                  "| 任务 | 轮次 | 状态 | 动作 | 决策轮 / System1调用 / 文本调用 | 耗时(ms) |",
+                  "|---|---:|---|---:|---:|---:|"]
         for row in batch["attempts"]:
             report.append(f"| {row['name']} | {row['repeat']} | {row['status']} | {row['actions']} | "
-                          f"{row['laya_calls']} / {row['text_calls']} | {row['elapsed_ms']} |")
+                          f"{row.get('decision_rounds', row.get('decision_calls', row['laya_calls']))} / "
+                          f"{row.get('decision_calls', row['laya_calls'])} / {row['text_calls']} | "
+                          f"{row['elapsed_ms']} |")
         report += ["", "状态与证据详见各任务的 evaluation.json；模型宣告 DONE 不等于独立验收通过。",
                    "文件可能包含网页内容和个人信息，分享前请检查。"]
         (folder / "report.zh.md").write_text("\n".join(report), encoding="utf-8")
@@ -361,6 +373,11 @@ class BaselineManager:
                 self.snapshots[(run_id, row["id"])] = snapshot
                 calls = snapshot.get("model_calls", [])
                 row.update(actions=len(snapshot["history"]), laya_calls=sum(c["kind"] == "laya" for c in calls),
+                           deepseek_calls=sum(c["kind"] == "deepseek" for c in calls),
+                           decision_calls=sum(c["kind"] in {"laya", "deepseek"} for c in calls),
+                           decision_rounds=snapshot.get("decision_rounds", sum(
+                               c["kind"] in {"laya", "deepseek"} and c.get("stage", "operation") == "operation"
+                               for c in calls)),
                            text_calls=sum(c["kind"] == "text" for c in calls),
                            elapsed_ms=round((time.monotonic() - started) * 1000))
 
@@ -370,9 +387,12 @@ class BaselineManager:
                 call = payload["call"]
                 call["observation_index"] = len(observations) - 1 if observations else None
                 if call["kind"] == "text":
-                    call["laya_call_id"] = next((c["id"] for c in reversed(current.state["model_calls"][:-1])
-                                                if c["kind"] == "laya"
-                                                and c.get("observation_index") == call["observation_index"]), None)
+                    parent = next((c for c in reversed(current.state["model_calls"][:-1])
+                                   if c["kind"] in {"laya", "deepseek"}
+                                   and c.get("observation_index") == call["observation_index"]), None)
+                    call["decision_call_id"] = parent["id"] if parent else None
+                    if parent and parent["kind"] == "laya":
+                        call["laya_call_id"] = parent["id"]
             append(name, payload)
             if name == "action_started" and task["id"] in {"05_baidu", "10_ctrip"}:
                 label = payload["action"].get("label", "")
@@ -424,12 +444,12 @@ class BaselineManager:
                     raise EnvironmentBlocked(str(error)) from error
 
             agent = self.agent_factory(task["url"], task["goal"], screenshots=False, on_event=event,
-                                       should_cancel=cancelled, prepare=setup)
+                                       should_cancel=cancelled, prepare=setup, system1_provider=row["system1_provider"])
             while agent.state["status"] not in {"done", "blocked"}:
                 reason = cancelled()
                 if reason:
                     raise RunCancelled(reason)
-                if len(agent.state["decisions"]) >= MAX_STEPS * 2:
+                if agent.state.get("decision_rounds", len(agent.state["decisions"])) >= MAX_STEPS * 2:
                     raise RunCancelled("timeout")
                 agent.command("tick")
                 publish(agent)

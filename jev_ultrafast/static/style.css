@@ -806,6 +806,8 @@ button.trace-row:hover { background: #f0f3f5; }
 .model-io { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
 .model-io details { min-width: 0; }
 .model-inputs { min-width: 0; }
+.system1-control { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; font-size: 13px; }
+.system1-control select { max-width: 100%; padding: 8px 12px; border: 1px solid var(--line); border-radius: 4px; background: white; }
 .question-context { padding: 12px 0; border-bottom: 1px solid var(--line); }
 .question-context h3 { font-size: 14px; margin: 0; overflow-wrap: anywhere; }
 .context-metrics, .context-total { font-size: 12px; color: #526273; }

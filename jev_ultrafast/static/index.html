@@ -11,7 +11,7 @@
   <body>
     <header>
       <a href="/" aria-label="Homepage" class="brand"
-        >browser<span>use</span> <i>×</i> Laya</a
+        >browser<span>use</span> <i>×</i> System1</a
       >
       <div class="local"><span class="dot"></span> Jev Ultrafast</div>
     </header>
@@ -21,15 +21,22 @@
           <p class="eyebrow">A BROWSER THAT CHOOSES</p>
           <h1>Every page is a set of possibilities.</h1>
           <p>
-            Laya picks the next action. A small language model handles the words.
+            System1 picks the next action. A small language model handles the words.
             <a href="/demo.mp4" target="_blank" rel="noopener">Watch the original Jev Google Flights run ↗</a>
           </p>
         </div>
         <dl class="model-endpoints" aria-label="Model service addresses">
-          <div><dt>Laya</dt><dd id="laya-address">Loading...</dd></div>
+          <div><dt id="system1-name">System1</dt><dd id="laya-address">Loading...</dd></div>
           <div><dt>Text model</dt><dd id="text-model-address">Loading...</dd></div>
         </dl>
       </section>
+      <div class="system1-control">
+        <label for="system1-provider">System1 决策模型</label>
+        <select id="system1-provider">
+          <option value="laya">本地 Laya</option>
+          <option value="deepseek">云端 DeepSeek</option>
+        </select>
+      </div>
       <nav class="view-tabs" role="tablist" aria-label="任务模式">
         <button type="button" id="free-tab" role="tab" aria-controls="free-panel" aria-selected="true">自由任务</button>
         <button type="button" id="baseline-tab" role="tab" aria-controls="baseline-panel" aria-selected="false" tabindex="-1">基线测试</button>
@@ -77,14 +84,14 @@ Find one-way flights from Zurich to London on September 20, 2026, for one adult 
         <div id="baseline-error" role="alert" hidden></div>
         <div class="table-scroll" tabindex="0" aria-label="基线任务表格">
           <table class="baseline-table">
-            <thead><tr><th scope="col">任务</th><th scope="col">覆盖能力</th><th scope="col">状态 / 评估</th><th scope="col">动作</th><th scope="col">Laya / Text</th><th scope="col">耗时</th><th scope="col">运行</th></tr></thead>
+            <thead><tr><th scope="col">任务</th><th scope="col">覆盖能力</th><th scope="col">状态 / 评估</th><th scope="col">动作</th><th scope="col">System1 / Text</th><th scope="col">耗时</th><th scope="col">运行</th></tr></thead>
             <tbody id="baseline-tasks"></tbody>
           </table>
         </div>
         <div class="baseline-attempt-heading"><h3>运行记录</h3><span id="baseline-summary"></span></div>
         <div class="table-scroll" tabindex="0" aria-label="基线运行记录表格">
           <table class="baseline-table attempts-table">
-            <thead><tr><th scope="col">任务 / 轮次</th><th scope="col">状态 / 评估</th><th scope="col">动作</th><th scope="col">Laya / Text</th><th scope="col">耗时</th><th scope="col">记录</th></tr></thead>
+            <thead><tr><th scope="col">任务 / 轮次</th><th scope="col">状态 / 评估</th><th scope="col">动作</th><th scope="col">System1 / Text</th><th scope="col">耗时</th><th scope="col">记录</th></tr></thead>
             <tbody id="baseline-attempts"></tbody>
           </table>
         </div>
@@ -192,16 +199,18 @@ Find one-way flights from Zurich to London on September 20, 2026, for one adult 
           </details>
           <details id="raw-request-panel" open>
             <summary>HTTP request body</summary>
+            <div id="stage-requests" hidden></div>
             <pre id="model-state">No request recorded.</pre>
           </details>
         </div>
         <details id="model-output-panel" open>
           <summary>What the model outputs</summary>
+          <div id="stage-outputs" hidden></div>
           <pre id="model-output">No response recorded.</pre>
         </details>
       </section>
       <footer>
-        <span>Browser Use × Laya · Local inference</span
+        <span>Browser Use × System1</span
         ><span id="helper">Text helper loading</span>
       </footer>
     </main>

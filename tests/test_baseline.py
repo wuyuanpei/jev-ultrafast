@@ -88,7 +88,7 @@ def test_sequential_repeated_runs_and_idempotent_save(tmp_path):
     assert all(r["status"] == "passed" for r in batch["attempts"])
     path = run.folder(batch["id"])
     manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["limits"] == {"actions": 30, "laya_calls": 60, "seconds": 300}
+    assert manifest["limits"] == {"actions": 30, "decision_rounds": 60, "decision_calls": 60, "seconds": 300}
     assert {p.name for p in path.iterdir()} >= {"manifest.json", "summary.json", "summary.csv", "report.zh.md"}
     row = batch["attempts"][0]
     trace = run.read_attempt(batch["id"], row["id"])
@@ -150,6 +150,44 @@ def test_helper_links_to_laya_on_same_observation(tmp_path):
     restored = run.read_attempt(batch["id"], attempt_id)
     assert restored["model_calls"][1]["laya_call_id"] == 1
     assert restored["model_calls"][1]["observation_index"] == 0
+
+
+def test_cloud_batch_pins_provider_and_keeps_separate_counts(tmp_path, monkeypatch):
+    monkeypatch.setenv("SYSTEM1_DEEPSEEK_API_KEY", "cloud-key")
+    providers = []
+
+    class CloudAgent(factory(initially_met=True, mutation=False)):
+        def __init__(self, *args, system1_provider, **kwargs):
+            providers.append(system1_provider)
+            super().__init__(*args, **kwargs)
+
+        def command(self, name):
+            self.state["decision_rounds"] = 1
+            for ident, kind, stage in ((1, "deepseek", "operation"), (2, "deepseek", "type_text_target"),
+                                       (3, "text", None)):
+                call = {"id": ident, "kind": kind, "status": "success", "decision_round": 1, "stage": stage}
+                self.state["model_calls"].append(call)
+                self.callback("model_start", self, {"call": call})
+            self.state["status"] = "done"
+
+    run = manager(tmp_path, agent_factory=CloudAgent)
+    run.start([run.tasks[0]["id"]], repeats=2, system1_provider="deepseek")
+    batch = finish(run)
+    assert providers == ["deepseek", "deepseek"]
+    assert batch["system1"]["provider"] == "deepseek"
+    for row in batch["attempts"]:
+        assert row["decision_calls"] == row["deepseek_calls"] == 2
+        assert row["decision_rounds"] == row["text_calls"] == 1
+        assert row["laya_calls"] == 0
+        assert row["system1_provider"] == "deepseek"
+        trace = run.read_attempt(batch["id"], row["id"])
+        assert trace["model_calls"][2]["decision_call_id"] == 2
+        assert "laya_call_id" not in trace["model_calls"][2]
+    manifest = json.loads((run.folder(batch["id"]) / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["system1"]["provider"] == "deepseek"
+    assert manifest["limits"]["decision_rounds"] == 60
+    assert manifest["limits"]["decision_calls"] == 120
+    assert "cloud-key" not in json.dumps(manifest)
 
 
 def test_stop_and_poll_do_not_wait_for_model_or_repeat_input(tmp_path):

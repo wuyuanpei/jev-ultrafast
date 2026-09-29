@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .agent import Agent
 from .baseline import BaselineConflict, BaselineManager
+from .model import system1_config
 from .questions import MAX_STEPS
 
 ROOT = Path(__file__).parent
@@ -51,6 +52,8 @@ def response_state():
         "text_model_base_url": os.environ.get("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1").rstrip("/"),
         "max_steps": MAX_STEPS,
         "baseline_active": bool(BASELINE and BASELINE.active),
+        "system1_options": [system1_config(p) for p in ("laya", "deepseek")],
+        "system1_default": system1_config()["provider"],
     }
 
 
@@ -66,7 +69,7 @@ def command(name, body):
     if name.startswith("baseline/"):
         manager = baseline()
         if name == "baseline/start":
-            result = manager.start(body.get("task_ids"), body.get("repeats", 1))
+            result = manager.start(body.get("task_ids"), body.get("repeats", 1), body.get("system1_provider"))
             close_browser()
             return result
         if name == "baseline/stop":
@@ -105,11 +108,13 @@ def command(name, body):
             valid_url = False
         if not valid_url:
             raise ValueError("Enter a valid http:// or https:// website URL (up to 2,048 characters)")
+        config = system1_config(body.get("system1_provider"), require_key=True)
         close_browser()
         AGENT = Agent(
             url,
             goal,
             screenshots=True,
+            system1_provider=config["provider"],
             record_dir=(
                 Path.cwd() / "artifacts" / "frames" if body.get("record") else None
             ),

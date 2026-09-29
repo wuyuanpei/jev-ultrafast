@@ -450,7 +450,7 @@ def test_decision_budget_allows_sixtieth_but_not_sixty_first(runner, monkeypatch
     monkeypatch.setattr(loop, "choose", choose)
     runner.state["decisions"] = [{}] * count
     if count == 60:
-        with pytest.raises(ValueError, match="model-call budget"):
+        with pytest.raises(ValueError, match="decision-round budget"):
             runner.command("predict")
         choose.assert_not_called()
     else:

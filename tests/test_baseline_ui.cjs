@@ -63,6 +63,7 @@ async function main() {
   assert.match(element('baseline-tasks').innerHTML, /&lt;unsafe&gt;/);
   assert.equal(element('baseline-run-all').disabled, true);
   assert.equal(element('baseline-stop').disabled, false);
+  assert.equal(element('system1-provider').disabled, true);
   assert.equal(element('baseline-path').textContent, batch.path);
   assert.match(element('baseline-attempts').innerHTML, /selected-attempt/);
   assert.equal(element('screenshot').src, '/api/baseline/file?second');
@@ -99,13 +100,19 @@ async function main() {
   run('startBaseline()');
   await flush();
   request = requests.filter(r => r.path.endsWith('/start')).at(-1);
-  assert.deepEqual(JSON.parse(request.options.body), { repeats: 3 });
+  assert.deepEqual(JSON.parse(request.options.body), { repeats: 3, system1_provider: 'laya' });
   assert.equal(run('freeState.page'), null, 'baseline start invalidates the closed free-task snapshot');
 
   element('baseline-tasks').listeners.click({ target: { closest: () => ({ dataset: { runTask: '04_task' }, disabled: false }) } });
   await flush();
   request = requests.filter(r => r.path.endsWith('/start')).at(-1);
-  assert.deepEqual(JSON.parse(request.options.body), { repeats: 3, task_ids: ['04_task'] });
+  assert.deepEqual(JSON.parse(request.options.body), { repeats: 3, system1_provider: 'laya', task_ids: ['04_task'] });
+  element('system1-provider').value = 'deepseek';
+  element('system1-provider').listeners.change();
+  run("startBaseline(['04_task'])");
+  await flush();
+  request = requests.filter(r => r.path.endsWith('/start')).at(-1);
+  assert.equal(JSON.parse(request.options.body).system1_provider, 'deepseek');
 
   element('baseline-attempts').listeners.click({ target: { closest: () => ({ dataset: { attemptId: attempts[1].id }, disabled: false }) } });
   assert.equal(run('selectedAttemptId'), attempts[1].id, 'selection is pinned before the snapshot request returns');

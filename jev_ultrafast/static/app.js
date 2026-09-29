@@ -24,6 +24,11 @@ const escape = (value) =>
   );
 const percent = (value) => `${(value * 100).toFixed(value < 0.01 ? 1 : 0)}%`;
 let selectedCallId = null;
+let renderedQuestionContexts = null;
+let system1Options = [], system1Choice = null;
+const callLabel = c => c?.kind === 'text' ? 'Text helper' : c?.kind === 'deepseek' ? `DeepSeek (System1)${c.stage ? ` / 第 ${c.decision_round} 轮 / ${c.stage === 'operation' ? '操作选择' : '目标选择'}` : ''}` : 'Laya';
+const decisionCount = attempt => attempt?.decision_calls ?? ((attempt?.laya_calls || 0) + (attempt?.deepseek_calls || 0));
+const chosenSystem1 = () => system1Choice || $('system1-provider').value || 'laya';
 let displayedTargetIndex = null, hoveredElementIndex = null, overlayContextKey = null;
 let view = 'free', freeState = null;
 let baseline = { tasks: [], active: false, batch: null, runs: [] };
@@ -65,12 +70,17 @@ function selectedModelCall() {
   if (view !== 'baseline') return calls.find(c => c.id === selectedCallId) || calls.at(-1);
   if (observationIndex() === -1) return calls.find(c => c.id === selectedCallId);
   const linked = calls.filter(c => Number.isInteger(c.observation_index) && c.observation_index === observationIndex());
-  return linked.find(c => c.id === selectedCallId) || linked.find(c => c.kind === 'laya') || linked[0];
+  return linked.find(c => c.id === selectedCallId) || linked.find(c => c.kind !== 'text') || linked[0];
 }
 function historicalDecision(call) {
-  if (call?.kind === 'text') call = (state.model_calls || []).find(c => c.id === call.laya_call_id);
+  if (call?.kind === 'text') call = (state.model_calls || []).find(c => c.id === (call.decision_call_id ?? call.laya_call_id));
+  if (call?.stage) {
+    const group = state.model_calls.filter(c => c.kind === 'deepseek' && c.decision_round === call.decision_round);
+    call = group.find(c => c.stage !== 'operation' && c.status === 'success') || group.find(c => c.stage === 'operation');
+  }
   if (!call) return { decision: null, elements: [] };
-  const elements = call.request?.state?.elements || [];
+  const elements = call.indexed_elements || call.decision_input?.state?.elements || call.request?.state?.elements || [];
+  if (call.decision && call.status === 'success') return { elements, decision: call.decision };
   const answers = call.response?.answers;
   const operation = call.operation;
   if (call.status !== 'success' || !operation || !answers?.operation?.probabilities) {
@@ -83,31 +93,107 @@ function historicalDecision(call) {
     target_probabilities: target?.probabilities || {}, target_confidence: target?.confidence,
   } };
 }
+function stableHTML(id, html, key) {
+  const node = $(id);
+  if (node.innerHTML === html) return;
+  const old = node.dataset?.renderKey === key ? Array.from(node.querySelectorAll?.('[data-panel]') || []).map(el => ({
+    name: el.dataset.panel, top: el.scrollTop, left: el.scrollLeft, open: el.open,
+  })) : [];
+  node.innerHTML = html;
+  if (node.dataset) node.dataset.renderKey = key;
+  for (const el of node.querySelectorAll?.('[data-panel]') || []) {
+    const saved = old.find(s => s.name === el.dataset.panel);
+    if (saved) { el.scrollTop = saved.top; el.scrollLeft = saved.left; if (saved.open !== undefined) el.open = saved.open; }
+  }
+}
+function stagePanels(selected) {
+  if (selected?.kind !== 'deepseek' || !selected.stage) return null;
+  const calls = state.model_calls.filter(c => c.kind === 'deepseek' && c.decision_round === selected.decision_round);
+  const op = calls.find(c => c.stage === 'operation');
+  const target = calls.find(c => c.stage !== 'operation');
+  const missing = op?.status === 'success' && !['CLICK', 'TYPE_TEXT', 'SELECT'].includes(op.operation)
+    ? '该操作无需目标调用' : '目标调用尚未发出';
+  const panels = [{ title: '操作选择', call: op }, { title: '目标选择', call: target }];
+  const html = kind => panels.map(({ title, call }, i) => {
+    const payload = kind === 'input' ? call?.request?.messages : kind === 'request' ? call?.request : call?.response;
+    const content = kind === 'input' && call?.laya_context && payload
+      ? payload.map(m => `${m.role}:\n${m.content}`).join('\n\n')
+      : payload ? formatPayload(payload) : call ? '等待记录' : missing;
+    const metrics = kind === 'input' && call?.laya_context
+      ? `<p class="context-metrics">Laya tokenizer: ${call.laya_context.input_tokens} / ${call.laya_context.max_tokens} tokens</p>` : '';
+    return `<details class="question-context" data-panel="${kind}-${i}" open><summary>${title} · ${escape(call?.status || missing)}</summary>${metrics}<pre data-panel="${kind}-${i}-body">${escape(content)}</pre>${call?.error ? `<p class="muted">${escape(call.error)}</p>` : ''}</details>`;
+  }).join('');
+  return { input: html('input'), request: html('request'), output: html('output'),
+    key: `${selectedRunId}/${selectedAttemptId}/${selected.decision_round}` };
+}
+function decisionTrail(calls) {
+  const rows = [], rounds = new Map();
+  for (const call of calls) {
+    const grouped = call.kind === 'deepseek' && call.stage && Number.isInteger(call.decision_round);
+    let row = grouped ? rounds.get(call.decision_round) : null;
+    if (!row) {
+      row = { call, members: [] };
+      rows.push(row);
+      if (grouped) rounds.set(call.decision_round, row);
+    }
+    row.members.push(call);
+  }
+  return rows.map(({ call, members }) => {
+    const grouped = call.kind === 'deepseek' && call.stage && Number.isInteger(call.decision_round);
+    const operation = members.find(c => c.stage === 'operation') || call;
+    const target = members.find(c => c.stage && c.stage !== 'operation');
+    const status = members.some(c => c.status === 'error') ? 'error'
+      : members.some(c => c.status === 'pending') ? 'pending'
+      : grouped && ['CLICK', 'TYPE_TEXT', 'SELECT'].includes(operation.operation) && !target
+        ? '目标未调用' : members.at(-1).status;
+    return { ...call, members, status,
+      operation: operation.operation, target: target?.target || call.target,
+      latency_ms: members.reduce((total, c) => total + (c.latency_ms || 0), 0),
+      label: grouped ? `DeepSeek (System1) / 第 ${call.decision_round} 轮` : callLabel(call),
+    };
+  });
+}
 function renderModelCalls() {
   const calls = state.model_calls || [];
   const selected = selectedModelCall();
-  $("history").innerHTML = calls.length ? calls.map(c =>
-    `<button type="button" class="trace-row ${c.id === selected?.id ? 'active' : ''}" data-call-id="${c.id}" aria-pressed="${c.id === selected?.id}"><span class="number">${String(c.id).padStart(2, '0')}</span><span>${c.kind === 'text' ? 'Text helper' : 'Laya'} <b>${escape(c.operation || c.field || '')}</b><small>${escape(c.model || '')}${c.target ? ' / target '+escape(c.target) : ''}</small></span><span class="time">${c.latency_ms ?? 0} ms</span><span class="call-status ${c.status === 'error' ? 'failed' : ''}">${escape(c.status)}</span></button>`
+  const rows = decisionTrail(calls);
+  const selectedRow = rows.find(row => row.members.some(c => c.id === selected?.id));
+  $("history").innerHTML = rows.length ? rows.map((c, index) =>
+    `<button type="button" class="trace-row ${c === selectedRow ? 'active' : ''}" data-call-id="${c.id}" aria-pressed="${c === selectedRow}"><span class="number">${String(index + 1).padStart(2, '0')}</span><span>${escape(c.label)} <b>${escape(c.operation || c.field || '')}</b><small>${escape(c.model || '')}${c.target ? ' / target '+escape(c.target) : ''}</small></span><span class="time">${c.latency_ms ?? 0} ms</span><span class="call-status ${c.status === 'error' ? 'failed' : ''}">${escape(c.status)}</span></button>`
   ).join('') : '<p class="muted">No model calls yet.</p>';
-  $("step-count").textContent = `${calls.length} model calls / ${state.history?.length || 0} actions`;
+  $("step-count").textContent = `${state.decision_rounds ?? state.decisions?.length ?? 0} rounds / ${calls.length} model calls / ${state.history?.length || 0} actions`;
   $("selected-call").textContent = selected
-    ? `Call ${selected.id} / ${selected.kind === 'text' ? 'Text helper' : 'Laya'} / ${selected.model || selected.status}`
+    ? `${selectedRow?.label || callLabel(selected)} / Call ${selectedRow?.members.map(c => c.id).join(', ') || selected.id} / ${selected.model || selected.status}`
     : 'No call selected';
-  $("model-state").textContent = selected?.request
+  const requestText = selected?.request
     ? formatPayload(selected.request) : 'No request recorded.';
+  if ($('model-state').textContent !== requestText) $('model-state').textContent = requestText;
   const contexts = selected?.response?.question_contexts;
   const hasContexts = Array.isArray(contexts) && contexts.length > 0;
-  $("question-contexts").innerHTML = hasContexts
+  const stages = stagePanels(selected);
+  const contextHTML = stages ? stages.input : hasContexts
     ? `<p class="context-total">${contexts.length} sequences / ${contexts.reduce((n, c) => n + c.input_tokens, 0)} input tokens total</p>` + contexts.map(c =>
       `<section class="question-context"><h3>${escape(c.question)}</h3><p class="context-metrics">Pass ${escape(c.pass)} / <strong>${escape(c.input_tokens)} / ${escape(c.max_tokens)} tokens</strong></p><pre>${escape(c.context)}</pre></section>`
     ).join('')
+    : selected?.kind === 'deepseek' ? `<pre>${escape(formatPayload(selected.request?.messages || []))}</pre>`
     : selected?.kind === 'laya' ? '<p class="muted">Per-question context unavailable in this response.</p>' : '';
+  if (renderedQuestionContexts !== contextHTML) {
+    stableHTML('question-contexts', contextHTML, stages?.key || String(selected?.id));
+    renderedQuestionContexts = contextHTML;
+  }
+  $('stage-requests').hidden = $('stage-outputs').hidden = !stages;
+  $('model-state').hidden = $('model-output').hidden = !!stages;
+  if (stages) {
+    stableHTML('stage-requests', stages.request, stages.key);
+    stableHTML('stage-outputs', stages.output, stages.key);
+  }
   const output = selected?.kind === 'laya' && selected.response != null
     ? Object.fromEntries(Object.entries(selected.response).filter(([key]) => key !== 'question_contexts'))
     : selected?.response;
-  $("model-output").textContent = selected?.error
+  const outputText = selected?.error
     ? formatPayload({ response: output ?? null, error: selected.error })
     : output != null ? formatPayload(output) : 'No response recorded.';
+  if ($('model-output').textContent !== outputText) $('model-output').textContent = outputText;
 }
 async function call(name, body = {}) {
   const response = await fetch(`/api/${name}`, {
@@ -126,6 +212,7 @@ async function call(name, body = {}) {
 function controls() {
   const live = state?.page && !["done", "blocked"].includes(state.status);
   const locked = busy || baseline.active || view !== 'free';
+  $('system1-provider').disabled = busy || automatic || baseline.active || baselineBusy;
   $('baseline-tab').disabled = busy;
   $("start").disabled = locked;
   $("scenario").disabled = locked;
@@ -165,7 +252,10 @@ async function perform(fn, label) {
 }
 function render() {
   if (!state) return;
-  $("laya-address").textContent = state.laya_base_url || freeState?.laya_base_url || "Unavailable";
+  const provider = state.system1_provider || (view === 'baseline' ? 'laya' : chosenSystem1());
+  const config = system1Options.find(c => c.provider === provider);
+  $('system1-name').textContent = provider === 'deepseek' ? 'System1 · DeepSeek' : 'System1 · Laya';
+  $("laya-address").textContent = state.system1_base_url || config?.base_url || state.laya_base_url || freeState?.laya_base_url || "Unavailable";
   $("text-model-address").textContent = state.text_model_base_url || freeState?.text_model_base_url || "Unavailable";
   $("helper").textContent = `Text helper · ${state.text_model || freeState?.text_model || 'Unavailable'}`;
   $("plan").innerHTML = (state.plan || [])
@@ -174,7 +264,7 @@ function render() {
         `<div class="plan-step ${i === state.plan_index ? "current" : ""}"><span>${i < state.plan_index ? "✓" : i + 1}</span>${escape(goal)}</div>`,
     )
     .join("");
-  const inspecting = view === 'baseline';
+  const inspecting = view === 'baseline' || (selectedCallId !== null && Number.isInteger(selectedModelCall()?.observation_index));
   const frame = state.observations?.[observationIndex()];
   const historical = inspecting ? historicalDecision(selectedModelCall()) : null;
   const page = inspecting ? frame?.page || (frame ? { url: frame.url, title: frame.title, actions: [] } : null) : state.page;
@@ -229,7 +319,7 @@ function render() {
   $("latency").textContent = d ? `${d.latency_ms} ms` : "—";
   $("confidence").textContent = d?.target_confidence != null ? percent(d.target_confidence) : "—";
   $("completion").textContent = d ? d.operation : "—";
-  $("ranking-note").textContent = d ? "Ranked by Jev" : "Unranked";
+  $("ranking-note").textContent = d?.provider === 'deepseek' ? 'DeepSeek · 概率未提供' : d ? "Ranked by Laya" : "Unranked";
   const op = Object.entries(d?.operation_probabilities || {}).sort((a,b)=>b[1]-a[1]);
   $("operation-choices").innerHTML = op.map(([name,p]) =>
     `<span class="operation-choice ${name === d.operation ? 'best' : ''}">${escape(name)} <b>${percent(p)}</b></span>`).join('');
@@ -305,13 +395,13 @@ function renderBaseline() {
   $('baseline-tasks').innerHTML = baseline.tasks.map(task => {
     const matching = attempts.filter(a => a.task_id === task.id);
     const attempt = matching.find(a => ['running', 'preparing'].includes(a.status)) || matching.at(-1);
-    return `<tr><th scope="row"><span class="task-number">${escape(task.id.slice(0, 2))}</span><span>${escape(task.name)}</span></th><td>${escape(task.capability)}</td><td>${escape(baselineLabel(attempt?.status))}${resultName(attempt) ? `<small>${escape(resultName(attempt))}</small>` : ''}</td><td>${attempt?.actions ?? '—'}</td><td>${attempt ? `${attempt.laya_calls || 0} / ${attempt.text_calls || 0}` : '—'}</td><td>${duration(attempt?.elapsed_ms)}</td><td><button type="button" class="icon-button" data-run-task="${escape(task.id)}" title="运行${escape(task.name)}" aria-label="运行${escape(task.name)}" ${locked ? 'disabled' : ''}>▶</button></td></tr>`;
+    return `<tr><th scope="row"><span class="task-number">${escape(task.id.slice(0, 2))}</span><span>${escape(task.name)}</span></th><td>${escape(task.capability)}</td><td>${escape(baselineLabel(attempt?.status))}${resultName(attempt) ? `<small>${escape(resultName(attempt))}</small>` : ''}</td><td>${attempt?.actions ?? '—'}</td><td>${attempt ? `${decisionCount(attempt)} / ${attempt.text_calls || 0}<small>${attempt.decision_rounds ?? decisionCount(attempt)} 决策轮</small>` : '—'}</td><td>${duration(attempt?.elapsed_ms)}</td><td><button type="button" class="icon-button" data-run-task="${escape(task.id)}" title="运行${escape(task.name)}" aria-label="运行${escape(task.name)}" ${locked ? 'disabled' : ''}>▶</button></td></tr>`;
   }).join('');
   $('baseline-attempts').innerHTML = attempts.length ? attempts.map(a => {
     const task = baseline.tasks.find(t => t.id === a.task_id);
     const result = resultName(a);
     const reason = a.reason || (typeof a.evaluation === 'object' && a.evaluation?.reason) || '';
-    return `<tr class="${a.id === selectedAttemptId ? 'selected-attempt' : ''}"><th scope="row">${escape(task?.name || a.task_id)}<small>第 ${escape(a.repeat)} 次</small></th><td>${escape(baselineLabel(a.status))}${result ? `<small class="${['通过', '目标达成'].includes(result) ? 'result-passed' : 'result-other'}">${escape(result)}</small>` : ''}${reason ? `<small class="attempt-reason">${escape(reason)}</small>` : ''}</td><td>${a.actions || 0}</td><td>${a.laya_calls || 0} / ${a.text_calls || 0}</td><td>${duration(a.elapsed_ms)}</td><td><button type="button" data-attempt-id="${escape(a.id)}" aria-pressed="${a.id === selectedAttemptId}" ${['queued', 'pending'].includes(a.status) ? 'disabled' : ''}>查看记录</button></td></tr>`;
+    return `<tr class="${a.id === selectedAttemptId ? 'selected-attempt' : ''}"><th scope="row">${escape(task?.name || a.task_id)}<small>第 ${escape(a.repeat)} 次 · ${a.system1_provider === 'deepseek' ? 'DeepSeek' : 'Laya'}</small></th><td>${escape(baselineLabel(a.status))}${result ? `<small class="${['通过', '目标达成'].includes(result) ? 'result-passed' : 'result-other'}">${escape(result)}</small>` : ''}${reason ? `<small class="attempt-reason">${escape(reason)}</small>` : ''}</td><td>${a.actions || 0}</td><td>${decisionCount(a)} / ${a.text_calls || 0}<small>${a.decision_rounds ?? decisionCount(a)} 决策轮</small></td><td>${duration(a.elapsed_ms)}</td><td><button type="button" data-attempt-id="${escape(a.id)}" aria-pressed="${a.id === selectedAttemptId}" ${['queued', 'pending'].includes(a.status) ? 'disabled' : ''}>查看记录</button></td></tr>`;
   }).join('') : '<tr><td colspan="6" class="muted">尚无运行记录</td></tr>';
   const passed = attempts.filter(a => a.status === 'passed' || resultName(a) === '通过').length;
   const blocked = attempts.filter(a => resultName(a) === '环境阻塞' || a.status === 'environment_blocked').length;
@@ -337,6 +427,10 @@ function clearFreeTask() {
 }
 function acceptBaseline(data) {
   const old = baseline.batch;
+  if (data.active && data.batch?.system1?.provider) {
+    system1Choice = data.batch.system1.provider;
+    $('system1-provider').value = system1Choice;
+  }
   if (data.active && !baseline.active) clearFreeTask();
   baseline = { ...baseline, ...data };
   if (pinnedRun && selectedRunId && data.batch?.id !== selectedRunId) baseline.batch = old;
@@ -359,7 +453,7 @@ function chooseBaselineAttempt() {
   const attempts = baseline.batch?.attempts || [];
   if (pinnedAttempt && attempts.some(a => a.id === selectedAttemptId)) return selectedAttemptId;
   const recorded = attempts.filter(a => !['queued', 'pending'].includes(a.status)
-    && (a.status !== 'cancelled' || a.started_at || a.laya_calls || a.text_calls || a.actions || a.evaluation));
+    && (a.status !== 'cancelled' || a.started_at || decisionCount(a) || a.text_calls || a.actions || a.evaluation));
   return (attempts.find(a => ['running', 'preparing'].includes(a.status)) || recorded.at(-1))?.id || null;
 }
 async function loadBaselineAttempt(id, epoch = baselineEpoch) {
@@ -428,7 +522,7 @@ function startBaseline(taskIds) {
     showBaselineError(Error('重复次数必须为 1–10 的整数。'));
     return;
   }
-  baselineAction('start', { repeats, ...(taskIds ? { task_ids: taskIds } : {}) });
+  baselineAction('start', { repeats, system1_provider: chosenSystem1(), ...(taskIds ? { task_ids: taskIds } : {}) });
 }
 async function selectView(next) {
   if (busy) return;
@@ -513,8 +607,8 @@ $("history").addEventListener("click", (event) => {
   const row = event.target.closest("[data-call-id]");
   if (!row) return;
   selectedCallId = Number(row.dataset.callId);
-  if (view === 'baseline') {
-    const call = (state.model_calls || []).find(c => c.id === selectedCallId);
+  const call = (state.model_calls || []).find(c => c.id === selectedCallId);
+  if (view === 'baseline' || Number.isInteger(call?.observation_index)) {
     selectedFrame = Number.isInteger(call?.observation_index) ? String(call.observation_index) : '-1';
     render();
   } else renderModelCalls();
@@ -527,6 +621,7 @@ $("task-form").addEventListener("submit", (event) => {
     () =>
       call("reset", {
         scenario: $("scenario").value,
+        system1_provider: chosenSystem1(),
         url: $("website-url").value.trim(),
         goal: $("goal").value,
       }),
@@ -625,10 +720,21 @@ $("download").addEventListener("click", () => {
   a.click();
   URL.revokeObjectURL(url);
 });
+$('system1-provider').addEventListener('change', () => {
+  system1Choice = $('system1-provider').value;
+  try { window.localStorage?.setItem('jev-system1-provider', system1Choice); } catch { /* Optional preference. */ }
+  render();
+});
+try {
+  const saved = window.localStorage?.getItem('jev-system1-provider');
+  if (['laya', 'deepseek'].includes(saved)) { system1Choice = saved; $('system1-provider').value = saved; }
+} catch { /* Storage may be disabled. */ }
 fetch("/api/state")
   .then((r) => r.json())
   .then((s) => {
     freeState = s;
+    system1Options = s.system1_options || [];
+    if (!system1Choice) $('system1-provider').value = s.system1_provider || s.system1_default || 'laya';
     if (view === 'free') { state = s; render(); }
   })
   .catch(() => {

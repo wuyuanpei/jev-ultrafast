@@ -48,7 +48,11 @@ page → element table → operation                 │
                    small LLM → text → browser
 ```
 
-Target questions are speculative. If the operation is `CLICK`, only `click_target` can execute. Two decisions, **one network round trip**. Each target head contains only compatible elements. Native dropdown choices carry an observed element/option index.
+For local Laya, target questions are speculative. If the operation is `CLICK`, only `click_target` can execute. Two decisions, **one network round trip**. Each target head contains only compatible elements. Native dropdown choices carry an observed element/option index.
+
+Cloud DeepSeek uses conditional stages: first `operation`, then only its target question for `CLICK`, `TYPE_TEXT`, or `SELECT`. Both stages use the same observation and rules. Other operations require no target call. Each stage has its own trace, input window, HTTP request body and output; the two stages share a decision-round ID. TYPE_TEXT can therefore require three calls including the unchanged text helper. Limits remain 30 actions and 60 decision rounds (up to 120 DeepSeek stage calls), with a 300-second baseline budget. Failed started calls are counted; transport retries are not new decision rounds. Reports distinguish rounds from actual System1 and text-helper calls.
+
+DeepSeek's user message is the exact decoded Laya v3 question sequence, including special-token text. `laya_context.py` mirrors the local server's page-only state (no `elements`), 1200-character page limit, candidate compaction, and token-budget truncation. The only additional prompt is a JSON output-format system message. Set `LAYA_CONTEXT_CHECKPOINT` to the **same checkpoint** loaded by Laya (default `../laya-browser-git/v10s`), and `LAYA_CONTEXT_MAX_OPTIONS` to the server's third CLI argument (default here `999`). Only local tokenizer/config files are read; no model weights, inference, or Laya network request is needed. Missing files, unsupported formats or a question requiring server-side chunking fail explicitly rather than sending approximate input. Overrides to the Laya server's format must not differ from the checkpoint configuration. The trace records a profile hash and Laya token counts; DeepSeek's own tokenizer and chat wrapper necessarily differ. Restart the demo after changing tokenizer/config files.
 
 There are no site-specific action scripts or prepared field strings in the policy. The Flights example supplies a goal and independently verifies the outcome. The screenshot renderer adds labels afterward; it does not drive the browser.
 
@@ -65,11 +69,15 @@ uv run jev
 
 Start your Laya systemone server before running `uv run jev`. `LAYA_BASE_URL` is the server origin (default `http://127.0.0.1:8791`, without `/v1/systemone`). `LAYA_TIMEOUT_SECONDS` defaults to 120 for local inference. `LAYA_MODEL` defaults to `laya-v10s`; the server selects its actual checkpoint at startup, not from this request label. `LAYA_API_KEY` is optional. Old `TYPESAFE_MODEL`, `TYPESAFE_BASE_URL`, and `TYPESAFE_API_KEY` settings are no longer used, so an existing `.env` can retain its text-helper settings without routing decisions to Jev.
 
+The **System1** dropdown selects local Laya or cloud DeepSeek for the next free task or baseline batch. The provider is fixed when that run starts; selecting a different provider does not change an existing free task. Cloud mode never calls Laya and requires no local inference server, but does need the matching tokenizer/config files. It uses `deepseek-flash` with thinking disabled and JSON output, receiving the exact decoded per-question Laya v3 sequence rather than the unprocessed HTTP state or full element table. Only JSON formatting instructions are added; the providers' own tokenization and inference formats differ. The executor validates the operation and its selected target and never accepts generated selectors, code, or field values. DeepSeek choice probabilities are not fabricated: the UI shows the selected option with probabilities unavailable.
+
+`SYSTEM1_PROVIDER` defaults to `laya`. Optional overrides are `SYSTEM1_DEEPSEEK_MODEL`, `SYSTEM1_DEEPSEEK_BASE_URL`, `SYSTEM1_DEEPSEEK_TIMEOUT_SECONDS` (default 60), and `SYSTEM1_DEEPSEEK_API_KEY`. With both services on the official DeepSeek host, an existing `TEXT_MODEL_API_KEY` is reused when the dedicated key is empty. A text-helper key for another provider is never reused for DeepSeek. The text helper's configuration is unchanged; TYPE_TEXT still makes a separate helper call. Cloud decisions send page content and task history to DeepSeek and may incur API charges. Model inputs/outputs, provider identity, and separate System1/text-helper counts are saved in traces and baseline manifests.
+
 Open **http://127.0.0.1:8766**, enter a target website URL or choose an existing demo preset, and click **Start task → Run automatically**. Selecting a preset fills its URL and example goal; editing the URL preserves your task text. The inspector shows numbered elements, operation probabilities, target probabilities, and executed actions. **Choose next** pauses before execution.
 
 Chrome connects through [Browser Harness](https://github.com/browser-use/browser-harness), installed by `uv sync`. Run `uv run browser-harness --doctor` if it needs connecting. Allow remote debugging in Chrome when prompted.
 
-Decision trail lists Laya and text-helper calls separately, including failed calls. Select a call to inspect its complete request body and formatted response. What the model sees, HTTP request body, and model output are independently collapsible and expanded by default. Exported traces include these records, without authentication headers. Traces may contain page content and entered text; review them before sharing.
+Decision trail lists each System1 decision and each text-helper call separately, including failures. DeepSeek's operation and target stages share one trail row with combined latency; their inputs, request bodies and outputs remain separate below. Raw traces and actual call counts retain both calls. What the model sees, HTTP request body, and model output are independently collapsible and expanded by default. Exported traces include these records, without authentication headers. Traces may contain page content and entered text; review them before sharing.
 
 Laya requests include `include_context: true`. With the updated local systemone server, the input panel shows each question's final tokenized sequence (decoded with special tokens), unpadded token count, sequence limit, and inference pass. The original HTTP request remains separately available. Older servers and historical traces without `question_contexts` show an unavailable notice instead of estimated lengths. Exported responses retain exact token IDs as well as decoded text.
 
@@ -101,7 +109,7 @@ uv run --env-file .env python examples/run.py \
 
 ## Why it moves
 
-- **One request per decision cycle.** Operation and target heads share the same observed state.
+- **One Laya request per decision cycle; conditional two-stage DeepSeek.** Operation and target choices share the same observed state.
 - **No screenshots in the default agent loop.** Laya consumes structured state. The inspector opts into screenshots; the video uses a separate continuous screencast.
 - **One browser call per snapshot.** Read visible controls, their names, values, and text atomically. Keep references to the actual DOM nodes.
 - **Validate the selected target.** Clicks check the document, form values, target, and nearby context. Animation alone does not force another prediction. Resolve current geometry and reject covered controls before input.
