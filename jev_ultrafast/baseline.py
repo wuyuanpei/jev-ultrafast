@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import shutil
 import threading
 import time
 from collections import Counter
@@ -313,6 +314,39 @@ class BaselineManager:
             self.persist()
         batch = self.read_run(run_id)
         return {**self.state(), "saved_path": batch["path"]}
+
+    def delete(self, run_id):
+        with self.io_lock, self.lock:
+            folder = self.folder(run_id)
+            entry = self.root / run_id
+            if (folder.parent != self.root or folder.name != run_id
+                    or entry.is_symlink() or entry.is_junction()):
+                raise ValueError("Invalid run path; linked directories cannot be deleted")
+            current = self.batch and self.batch["id"] == run_id
+            if current and (self.active or (self.thread and self.thread.is_alive())):
+                raise BaselineConflict("Stop the running batch before deleting it")
+            if not folder.is_dir():
+                raise ValueError("Unknown run")
+            batch = json.loads((folder / "summary.json").read_text(encoding="utf-8"))
+            if batch.get("status") not in TERMINAL:
+                raise BaselineConflict("Cannot delete an unfinished batch")
+            # Refuse reparse points anywhere in the tree before recursive removal.
+            for parent, directories, files in os.walk(folder, followlinks=False):
+                for name in directories + files:
+                    path = Path(parent) / name
+                    if path.is_symlink() or path.is_junction() or not path.resolve().is_relative_to(folder):
+                        raise ValueError("Run contains a linked path; deletion refused")
+            try:
+                shutil.rmtree(folder)
+            except OSError as error:
+                raise RuntimeError("Could not delete all batch files; check file permissions and retry") from error
+            self.snapshots = {key: value for key, value in self.snapshots.items() if key[0] != run_id}
+            if current:
+                self.batch = None
+                remaining = self.runs()
+                if remaining:
+                    self.batch = self.read_run(remaining[0]["id"])
+        return self.state()
 
     def work(self, run_id, tasks):
         by_id = {t["id"]: t for t in tasks}

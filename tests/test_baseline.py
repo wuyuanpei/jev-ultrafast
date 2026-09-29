@@ -345,3 +345,52 @@ def test_archive_failure_still_closes_owned_tab(tmp_path, monkeypatch):
     instances[0].browser.close.assert_called_once()
     events = (run.folder(batch["id"]) / batch["attempts"][0]["id"] / "events.jsonl").read_text(encoding="utf-8")
     assert '"event": "model_start"' in events
+
+
+def test_delete_entire_batch_and_keep_other_runs(tmp_path):
+    run = manager(tmp_path, agent_factory=factory())
+    run.start([run.tasks[0]["id"]])
+    first = finish(run)
+    run.start([run.tasks[0]["id"]])
+    second = finish(run)
+    folder = run.folder(first["id"])
+    assert list(folder.rglob("*.jpg"))
+    result = run.delete(first["id"])
+    assert not folder.exists()
+    assert run.folder(second["id"]).exists()
+    assert result["batch"]["id"] == second["id"]
+    result = run.delete(second["id"])
+    assert result["batch"] is None and result["runs"] == []
+    assert run.snapshots == {}
+    with pytest.raises(ValueError, match="Unknown run"):
+        run.delete(second["id"])
+
+
+def test_delete_active_batch_and_unsafe_paths_rejected(tmp_path):
+    started, release = threading.Event(), threading.Event()
+    run = manager(tmp_path, agent_factory=factory(hold=(started, release)))
+    run.start([run.tasks[0]["id"]])
+    try:
+        assert started.wait(3)
+        with pytest.raises(BaselineConflict):
+            run.delete(run.batch["id"])
+        for path in (None, "..", "../20260928_000000_000", str(tmp_path)):
+            with pytest.raises(ValueError):
+                run.delete(path)
+    finally:
+        release.set()
+        finish(run)
+
+
+def test_delete_refuses_linked_tree_before_removing_anything(tmp_path, monkeypatch):
+    run = manager(tmp_path, agent_factory=factory())
+    run.start([run.tasks[0]["id"]])
+    batch = finish(run)
+    folder = run.folder(batch["id"])
+    original = baseline.Path.is_junction
+    monkeypatch.setattr(baseline.Path, "is_junction",
+                        lambda path: path.name == "screenshots" or original(path))
+    with pytest.raises(ValueError, match="linked path"):
+        run.delete(batch["id"])
+    assert (folder / "summary.json").exists()
+    assert list(folder.rglob("*.jpg"))

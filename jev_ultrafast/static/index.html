@@ -77,7 +77,10 @@ Find one-way flights from Zurich to London on September 20, 2026, for one adult 
           </div>
         </div>
         <div class="baseline-batch-bar">
-          <label for="baseline-runs">历史批次 <select id="baseline-runs"><option value="">尚无批次</option></select></label>
+          <div class="baseline-run-picker">
+            <label for="baseline-runs">历史批次 <select id="baseline-runs"><option value="">尚无批次</option></select></label>
+            <button type="button" id="baseline-delete" disabled title="永久删除所选批次及全部文件" aria-label="删除所选批次">删除</button>
+          </div>
           <span id="baseline-status" role="status" aria-live="polite">正在读取任务</span>
         </div>
         <p id="baseline-path" class="baseline-path"></p>

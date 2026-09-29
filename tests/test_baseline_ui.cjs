@@ -35,7 +35,7 @@ const requests = [];
 let failure = null, deferred = null;
 const context = vm.createContext({
   document: { getElementById: element, querySelector: () => ({ content: 'secret' }), querySelectorAll: () => [] },
-  window: { location: { origin: 'http://localhost' } }, URL, URLSearchParams,
+  window: { location: { origin: 'http://localhost' }, confirm: () => false }, URL, URLSearchParams,
   setInterval: () => 0,
   fetch: async (path, options = {}) => {
     requests.push({ path, options });
@@ -63,6 +63,7 @@ async function main() {
   assert.match(element('baseline-tasks').innerHTML, /&lt;unsafe&gt;/);
   assert.equal(element('baseline-run-all').disabled, true);
   assert.equal(element('baseline-stop').disabled, false);
+  assert.equal(element('baseline-delete').disabled, true);
   assert.equal(element('system1-provider').disabled, true);
   assert.equal(element('baseline-path').textContent, batch.path);
   assert.match(element('baseline-attempts').innerHTML, /selected-attempt/);
@@ -165,6 +166,19 @@ async function main() {
   assert.equal(JSON.parse(request.options.body).run_id, historical.id);
   assert.equal(element('baseline-path').textContent, historical.path);
 
+  assert.equal(element('baseline-delete').disabled, false);
+  const beforeDelete = requests.length;
+  element('baseline-delete').listeners.click();
+  assert.equal(requests.length, beforeDelete, 'cancel confirmation sends no deletion');
+  context.window.confirm = message => { assert.match(message, /无法撤销/); return true; };
+  data = { tasks, active: false, batch: null, runs: [] };
+  element('baseline-delete').listeners.click();
+  await flush();
+  const deletion = requests.find(r => r.path.endsWith('/delete'));
+  assert.equal(JSON.parse(deletion.options.body).run_id, historical.id);
+  assert.equal(deletion.options.headers['X-Demo-Token'], 'secret');
+  assert.equal(element('baseline-delete').disabled, true);
+  assert.equal(element('screenshot').hidden, true);
   await run("selectView('free')");
   assert.equal(element('free-controls').hidden, false);
   assert.equal(element('baseline-panel').hidden, true);
@@ -173,6 +187,7 @@ async function main() {
   assert.equal(element('screenshot').hidden, true, 'stale baseline screenshot cleared');
 
   const html = fs.readFileSync('jev_ultrafast/static/index.html', 'utf8');
+  assert.match(html, /class="baseline-run-picker">[\s\S]*?id="baseline-runs"[\s\S]*?id="baseline-delete"[^>]*>删除<\/button>\s*<\/div>/);
   assert.match(html, /id="baseline-repeats"[^>]*min="1" max="10" step="1" value="1"/);
   assert.match(html, /role="tabpanel" aria-labelledby="baseline-tab"/);
   console.log('Baseline UI tests passed');

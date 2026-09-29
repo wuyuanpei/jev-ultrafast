@@ -76,6 +76,8 @@ def command(name, body):
             return manager.stop()
         if name == "baseline/save":
             return manager.save(body.get("run_id"))
+        if name == "baseline/delete":
+            return manager.delete(body.get("run_id"))
         raise ValueError("Unknown baseline command")
     if BASELINE and BASELINE.active:
         raise BaselineConflict("Baseline owns the browser; stop it before running a free task")

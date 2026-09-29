@@ -381,6 +381,7 @@ function renderBaseline() {
   $('baseline-run-all').disabled = locked || !baseline.tasks.length;
   $('baseline-stop').disabled = baselineBusy || !baseline.active;
   $('baseline-save').disabled = baselineBusy || !batch;
+  $('baseline-delete').disabled = baselineBusy || !batch || !['completed', 'cancelled', 'error', 'interrupted'].includes(batch.status);
   $('baseline-repeats').disabled = locked;
   const runs = [...baseline.runs];
   if (batch && !runs.some(r => r.id === batch.id)) runs.unshift(batch);
@@ -504,7 +505,13 @@ async function baselineAction(name, body = {}) {
   try {
     const data = await baselineFetch(`/${name}`, body);
     if (name === 'start') { pinnedRun = false; pinnedAttempt = false; clearFreeTask(); }
+    if (name === 'delete') {
+      pinnedRun = false; pinnedAttempt = false;
+      selectedRunId = null; selectedAttemptId = null; selectedFrame = null; selectedCallId = null;
+      if (view === 'baseline') state = { status: 'idle', page: null, model_calls: [], history: [], elements: [] };
+    }
     acceptBaseline(data);
+    if (name === 'delete' && view === 'baseline') render();
     renderBaseline();
     if (data.saved_path) $('baseline-path').textContent = data.saved_path;
     if (view === 'baseline') await loadBaselineAttempt(chooseBaselineAttempt(), epoch);
@@ -562,6 +569,12 @@ for (const name of ['free', 'baseline']) $(`${name}-tab`).addEventListener('keyd
 $('baseline-run-all').addEventListener('click', () => startBaseline());
 $('baseline-stop').addEventListener('click', () => baselineAction('stop'));
 $('baseline-save').addEventListener('click', () => baselineAction('save', { run_id: selectedRunId }));
+$('baseline-delete').addEventListener('click', () => {
+  if ($('baseline-delete').disabled) return;
+  const batch = baseline.batch;
+  if (!batch || !window.confirm(`永久删除批次 ${batch.id}？\n${batch.path || ''}\n所有 trace、截图和评估文件都会从磁盘删除，无法撤销。`)) return;
+  baselineAction('delete', { run_id: batch.id });
+});
 $('baseline-tasks').addEventListener('click', event => {
   const button = event.target.closest('[data-run-task]');
   if (button && !button.disabled) startBaseline([button.dataset.runTask]);
