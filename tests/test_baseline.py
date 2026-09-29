@@ -296,6 +296,26 @@ def test_credential_redaction(tmp_path, monkeypatch):
     assert "sensitive-key" not in json.dumps(run.state())
 
 
+def test_jev_baseline_counts_and_key_redaction(tmp_path, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "jev-private-key")
+    class JevAgent(factory()):
+        def command(self, name):
+            call = {"id": 1, "kind": "jev", "status": "error", "error": "jev-private-key"}
+            self.state["model_calls"].append(call)
+            self.callback("model_start", self, {"call": call})
+            self.callback("model_end", self, {"call": call})
+            self.state["status"] = "done"
+    run = manager(tmp_path, agent_factory=JevAgent)
+    run.start([run.tasks[0]["id"]], system1_provider="jev")
+    batch = finish(run)
+    row = batch["attempts"][0]
+    assert row["jev_calls"] == row["decision_calls"] == 1
+    assert row["laya_calls"] == row["deepseek_calls"] == 0
+    assert batch["system1"]["provider"] == "jev"
+    trace = run.read_attempt(batch["id"], row["id"])
+    assert "jev-private-key" not in json.dumps(trace)
+
+
 def test_first_completion_then_leaving_is_not_success(tmp_path):
     class LeavesGoal(factory(initially_met=True, mutation=False)):
         def command(self, name):

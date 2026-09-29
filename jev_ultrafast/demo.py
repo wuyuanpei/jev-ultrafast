@@ -52,7 +52,7 @@ def response_state():
         "text_model_base_url": os.environ.get("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1").rstrip("/"),
         "max_steps": MAX_STEPS,
         "baseline_active": bool(BASELINE and BASELINE.active),
-        "system1_options": [system1_config(p) for p in ("laya", "deepseek")],
+        "system1_options": [system1_config(p) for p in ("laya", "deepseek", "jev")],
         "system1_default": system1_config()["provider"],
     }
 

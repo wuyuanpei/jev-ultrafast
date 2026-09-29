@@ -78,7 +78,7 @@ class BaselineManager:
         if isinstance(data, list):
             return [self.clean(v) for v in data]
         if isinstance(data, str):
-            for key in ("LAYA_API_KEY", "TEXT_MODEL_API_KEY", "SYSTEM1_DEEPSEEK_API_KEY"):
+            for key in ("LAYA_API_KEY", "TEXT_MODEL_API_KEY", "SYSTEM1_DEEPSEEK_API_KEY", "TYPESAFE_API_KEY"):
                 secret = os.environ.get(key)
                 if secret:
                     data = data.replace(secret, "[REDACTED]")
@@ -179,7 +179,7 @@ class BaselineManager:
                             call = calls.get(event.get("call", {}).get("id"))
                             if call is not None:
                                 call.setdefault("observation_index", index if 0 <= index < len(frames) else None)
-                                if call["kind"] in {"laya", "deepseek"}:
+                                if call["kind"] in {"laya", "deepseek", "jev"}:
                                     laya_id = call["id"]
                                 else:
                                     call.setdefault("decision_call_id", laya_id)
@@ -224,7 +224,7 @@ class BaselineManager:
             run_id = candidate
             tasks = [t for t in self.tasks if t["id"] in ids]
             attempts = [dict(id=f"{t['id']}/attempt-{n:02}", task_id=t["id"], name=t["name"],
-                             repeat=n, status="queued", actions=0, laya_calls=0, deepseek_calls=0,
+                             repeat=n, status="queued", actions=0, laya_calls=0, deepseek_calls=0, jev_calls=0,
                              decision_calls=0, decision_rounds=0, system1_provider=config["provider"], text_calls=0,
                              elapsed_ms=0, reason="", evaluation=None)
                         for t in tasks for n in range(1, repeats + 1)]
@@ -277,7 +277,7 @@ class BaselineManager:
         batch["success_rate"] = counts["passed"] / max(1, len(batch["attempts"]))
         atomic_json(folder / "summary.json", self.clean(batch))
         fields = ["task_id", "repeat", "status", "system1_provider", "actions", "decision_rounds", "decision_calls",
-                  "laya_calls", "deepseek_calls", "text_calls", "elapsed_ms", "reason"]
+                  "laya_calls", "deepseek_calls", "jev_calls", "text_calls", "elapsed_ms", "reason"]
         output = io.StringIO(newline="")
         writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
@@ -408,9 +408,10 @@ class BaselineManager:
                 calls = snapshot.get("model_calls", [])
                 row.update(actions=len(snapshot["history"]), laya_calls=sum(c["kind"] == "laya" for c in calls),
                            deepseek_calls=sum(c["kind"] == "deepseek" for c in calls),
-                           decision_calls=sum(c["kind"] in {"laya", "deepseek"} for c in calls),
+                           jev_calls=sum(c["kind"] == "jev" for c in calls),
+                           decision_calls=sum(c["kind"] in {"laya", "deepseek", "jev"} for c in calls),
                            decision_rounds=snapshot.get("decision_rounds", sum(
-                               c["kind"] in {"laya", "deepseek"} and c.get("stage", "operation") == "operation"
+                               c["kind"] in {"laya", "deepseek", "jev"} and c.get("stage", "operation") == "operation"
                                for c in calls)),
                            text_calls=sum(c["kind"] == "text" for c in calls),
                            elapsed_ms=round((time.monotonic() - started) * 1000))
@@ -422,7 +423,7 @@ class BaselineManager:
                 call["observation_index"] = len(observations) - 1 if observations else None
                 if call["kind"] == "text":
                     parent = next((c for c in reversed(current.state["model_calls"][:-1])
-                                   if c["kind"] in {"laya", "deepseek"}
+                                   if c["kind"] in {"laya", "deepseek", "jev"}
                                    and c.get("observation_index") == call["observation_index"]), None)
                     call["decision_call_id"] = parent["id"] if parent else None
                     if parent and parent["kind"] == "laya":

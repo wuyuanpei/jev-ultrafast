@@ -5,6 +5,7 @@ import math
 import os
 import time
 from copy import deepcopy
+from functools import partial
 from urllib.parse import urlsplit
 
 import httpx
@@ -17,8 +18,14 @@ CLIENT = httpx.Client(http2=True, timeout=25)
 
 def system1_config(provider=None, *, require_key=False):
     provider = os.getenv("SYSTEM1_PROVIDER", "laya") if provider is None else provider
-    if provider not in ("laya", "deepseek"):
-        raise ValueError("System1 must be laya or deepseek")
+    if provider not in ("laya", "deepseek", "jev"):
+        raise ValueError("System1 must be laya, deepseek or jev")
+    if provider == "jev":
+        if require_key and not os.getenv("TYPESAFE_API_KEY", "").strip():
+            raise ValueError("System1 Jev needs TYPESAFE_API_KEY in .env")
+        return {"provider": provider, "model": os.getenv("TYPESAFE_MODEL") or "jev-latest",
+                "base_url": (os.getenv("TYPESAFE_BASE_URL") or "https://api.typesafe.ai").rstrip("/"),
+                "timeout": float(os.getenv("TYPESAFE_TIMEOUT_SECONDS") or "60")}
     if provider == "laya":
         return {"provider": provider, "model": os.getenv("LAYA_MODEL", "laya-v10s"),
                 "base_url": os.getenv("LAYA_BASE_URL", "http://127.0.0.1:8791").rstrip("/"),
@@ -108,7 +115,7 @@ def model_request(url, key, body, *, trace=None, **kwargs):
     return result
 
 
-def validate_choice(answer, ids):
+def validate_choice(answer, ids, *, label="Laya"):
     try:
         probabilities = answer["probabilities"]
         numbers = [*probabilities.values(), answer["confidence"]]
@@ -125,7 +132,7 @@ def validate_choice(answer, ids):
     except (KeyError, TypeError, ValueError):
         valid = False
     if not valid:
-        raise ValueError("Invalid Laya response; no action executed.")
+        raise ValueError(f"Invalid {label} response; no action executed.")
     return answer
 
 
@@ -171,7 +178,7 @@ def action_space(actions):
 
 
 def choose(state, goal, history, *, trace=None, provider="laya", stage_call=None):
-    config = system1_config(provider)
+    config = system1_config(provider, require_key=provider == "jev")
     elements, targets, controls = action_space(state["actions"])
     labels = {
         "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
@@ -226,9 +233,9 @@ def choose(state, goal, history, *, trace=None, provider="laya", stage_call=None
         "questions": questions,
     }
     started = time.perf_counter()
-    base_url = os.environ.get("LAYA_BASE_URL", "http://127.0.0.1:8791").rstrip(
-        "/"
-    )
+    base_url = config["base_url"]
+    if provider == "jev":
+        body.pop("include_context", None)
 
     if provider == "deepseek":
         def request_stage(question, *, trace=None):
@@ -261,10 +268,13 @@ def choose(state, goal, history, *, trace=None, provider="laya", stage_call=None
                                and isinstance(target_result["usage"].get(key, 0), (int, float))}
     else:
         result = model_request(
-            base_url + "/v1/systemone", os.environ.get("LAYA_API_KEY", ""), body,
+            base_url + "/v1/systemone",
+            os.environ.get("TYPESAFE_API_KEY" if provider == "jev" else "LAYA_API_KEY", ""), body,
             trace=trace, timeout=config["timeout"],
         )
     validate = validate_choice if provider == "laya" else validate_selection
+    if provider == "jev":
+        validate = partial(validate_choice, label="Jev")
     operation_answer = validate(
         result["answers"].get("operation", {}), operations
     )

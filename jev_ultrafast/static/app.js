@@ -26,8 +26,9 @@ const percent = (value) => `${(value * 100).toFixed(value < 0.01 ? 1 : 0)}%`;
 let selectedCallId = null;
 let renderedQuestionContexts = null;
 let system1Options = [], system1Choice = null;
-const callLabel = c => c?.kind === 'text' ? 'Text helper' : c?.kind === 'deepseek' ? `DeepSeek (System1)${c.stage ? ` / 第 ${c.decision_round} 轮 / ${c.stage === 'operation' ? '操作选择' : '目标选择'}` : ''}` : 'Laya';
-const decisionCount = attempt => attempt?.decision_calls ?? ((attempt?.laya_calls || 0) + (attempt?.deepseek_calls || 0));
+const providerLabel = p => ({ laya: 'Laya', deepseek: 'DeepSeek', jev: 'Jev' })[p] || 'Laya';
+const callLabel = c => c?.kind === 'text' ? 'Text helper' : c?.kind === 'deepseek' ? `DeepSeek (System1)${c.stage ? ` / 第 ${c.decision_round} 轮 / ${c.stage === 'operation' ? '操作选择' : '目标选择'}` : ''}` : providerLabel(c?.kind);
+const decisionCount = attempt => attempt?.decision_calls ?? ((attempt?.laya_calls || 0) + (attempt?.deepseek_calls || 0) + (attempt?.jev_calls || 0));
 const chosenSystem1 = () => system1Choice || $('system1-provider').value || 'laya';
 let displayedTargetIndex = null, hoveredElementIndex = null, overlayContextKey = null;
 let view = 'free', freeState = null;
@@ -176,6 +177,7 @@ function renderModelCalls() {
       `<section class="question-context"><h3>${escape(c.question)}</h3><p class="context-metrics">Pass ${escape(c.pass)} / <strong>${escape(c.input_tokens)} / ${escape(c.max_tokens)} tokens</strong></p><pre>${escape(c.context)}</pre></section>`
     ).join('')
     : selected?.kind === 'deepseek' ? `<pre>${escape(formatPayload(selected.request?.messages || []))}</pre>`
+    : selected?.kind === 'jev' ? `<pre>${escape(formatPayload({ state: selected.request?.state, questions: selected.request?.questions }))}</pre><p class="muted">Jev 服务端未提供最终编码上下文；此处为实际提交内容。</p>`
     : selected?.kind === 'laya' ? '<p class="muted">Per-question context unavailable in this response.</p>' : '';
   if (renderedQuestionContexts !== contextHTML) {
     stableHTML('question-contexts', contextHTML, stages?.key || String(selected?.id));
@@ -187,7 +189,7 @@ function renderModelCalls() {
     stableHTML('stage-requests', stages.request, stages.key);
     stableHTML('stage-outputs', stages.output, stages.key);
   }
-  const output = selected?.kind === 'laya' && selected.response != null
+  const output = ['laya', 'jev'].includes(selected?.kind) && selected.response != null
     ? Object.fromEntries(Object.entries(selected.response).filter(([key]) => key !== 'question_contexts'))
     : selected?.response;
   const outputText = selected?.error
@@ -254,7 +256,7 @@ function render() {
   if (!state) return;
   const provider = state.system1_provider || (view === 'baseline' ? 'laya' : chosenSystem1());
   const config = system1Options.find(c => c.provider === provider);
-  $('system1-name').textContent = provider === 'deepseek' ? 'System1 · DeepSeek' : 'System1 · Laya';
+  $('system1-name').textContent = `System1 · ${providerLabel(provider)}`;
   $("laya-address").textContent = state.system1_base_url || config?.base_url || state.laya_base_url || freeState?.laya_base_url || "Unavailable";
   $("text-model-address").textContent = state.text_model_base_url || freeState?.text_model_base_url || "Unavailable";
   $("helper").textContent = `Text helper · ${state.text_model || freeState?.text_model || 'Unavailable'}`;
@@ -319,7 +321,7 @@ function render() {
   $("latency").textContent = d ? `${d.latency_ms} ms` : "—";
   $("confidence").textContent = d?.target_confidence != null ? percent(d.target_confidence) : "—";
   $("completion").textContent = d ? d.operation : "—";
-  $("ranking-note").textContent = d?.provider === 'deepseek' ? 'DeepSeek · 概率未提供' : d ? "Ranked by Laya" : "Unranked";
+  $("ranking-note").textContent = d?.provider === 'deepseek' ? 'DeepSeek · 概率未提供' : d ? `Ranked by ${providerLabel(d.provider)}` : "Unranked";
   const op = Object.entries(d?.operation_probabilities || {}).sort((a,b)=>b[1]-a[1]);
   $("operation-choices").innerHTML = op.map(([name,p]) =>
     `<span class="operation-choice ${name === d.operation ? 'best' : ''}">${escape(name)} <b>${percent(p)}</b></span>`).join('');
@@ -402,7 +404,7 @@ function renderBaseline() {
     const task = baseline.tasks.find(t => t.id === a.task_id);
     const result = resultName(a);
     const reason = a.reason || (typeof a.evaluation === 'object' && a.evaluation?.reason) || '';
-    return `<tr class="${a.id === selectedAttemptId ? 'selected-attempt' : ''}"><th scope="row">${escape(task?.name || a.task_id)}<small>第 ${escape(a.repeat)} 次 · ${a.system1_provider === 'deepseek' ? 'DeepSeek' : 'Laya'}</small></th><td>${escape(baselineLabel(a.status))}${result ? `<small class="${['通过', '目标达成'].includes(result) ? 'result-passed' : 'result-other'}">${escape(result)}</small>` : ''}${reason ? `<small class="attempt-reason">${escape(reason)}</small>` : ''}</td><td>${a.actions || 0}</td><td>${decisionCount(a)} / ${a.text_calls || 0}<small>${a.decision_rounds ?? decisionCount(a)} 决策轮</small></td><td>${duration(a.elapsed_ms)}</td><td><button type="button" data-attempt-id="${escape(a.id)}" aria-pressed="${a.id === selectedAttemptId}" ${['queued', 'pending'].includes(a.status) ? 'disabled' : ''}>查看记录</button></td></tr>`;
+    return `<tr class="${a.id === selectedAttemptId ? 'selected-attempt' : ''}"><th scope="row">${escape(task?.name || a.task_id)}<small>第 ${escape(a.repeat)} 次 · ${providerLabel(a.system1_provider)}</small></th><td>${escape(baselineLabel(a.status))}${result ? `<small class="${['通过', '目标达成'].includes(result) ? 'result-passed' : 'result-other'}">${escape(result)}</small>` : ''}${reason ? `<small class="attempt-reason">${escape(reason)}</small>` : ''}</td><td>${a.actions || 0}</td><td>${decisionCount(a)} / ${a.text_calls || 0}<small>${a.decision_rounds ?? decisionCount(a)} 决策轮</small></td><td>${duration(a.elapsed_ms)}</td><td><button type="button" data-attempt-id="${escape(a.id)}" aria-pressed="${a.id === selectedAttemptId}" ${['queued', 'pending'].includes(a.status) ? 'disabled' : ''}>查看记录</button></td></tr>`;
   }).join('') : '<tr><td colspan="6" class="muted">尚无运行记录</td></tr>';
   const passed = attempts.filter(a => a.status === 'passed' || resultName(a) === '通过').length;
   const blocked = attempts.filter(a => resultName(a) === '环境阻塞' || a.status === 'environment_blocked').length;
@@ -740,7 +742,7 @@ $('system1-provider').addEventListener('change', () => {
 });
 try {
   const saved = window.localStorage?.getItem('jev-system1-provider');
-  if (['laya', 'deepseek'].includes(saved)) { system1Choice = saved; $('system1-provider').value = saved; }
+  if (['laya', 'deepseek', 'jev'].includes(saved)) { system1Choice = saved; $('system1-provider').value = saved; }
 } catch { /* Storage may be disabled. */ }
 fetch("/api/state")
   .then((r) => r.json())

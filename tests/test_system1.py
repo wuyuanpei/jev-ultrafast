@@ -29,6 +29,60 @@ def response(choices, finish="stop"):
             "message": {"content": json.dumps(choices)}}], "usage": {"prompt_tokens": 100, "completion_tokens": 20}}
 
 
+@pytest.mark.parametrize("operation,target,expected", [("CLICK", "2", "e3"), ("DONE", None, "DONE")])
+def test_jev_original_endpoint_and_validated_probabilities(cloud, monkeypatch, operation, target, expected):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "jev-secret")
+    monkeypatch.delenv("TYPESAFE_BASE_URL", raising=False)
+    monkeypatch.delenv("TYPESAFE_MODEL", raising=False)
+    def reply(url, key, body, **kwargs):
+        assert url == "https://api.typesafe.ai/v1/systemone"
+        assert key == "jev-secret" and key != model.deepseek_key()
+        assert "include_context" not in body and "messages" not in body
+        assert body["model"] == "jev-latest"
+        assert body["questions"]["operation"]["instructions"]["rules"] == NEXT_ACTION
+        def answer(question, selected):
+            return {"choice": selected, "confidence": 1,
+                    "probabilities": {k: float(k == selected) for k in body["questions"][question]["criteria"]}}
+        answers = {"operation": answer("operation", operation), "type_text_target": {"choice": "unused-invalid"}}
+        if target:
+            answers["click_target"] = answer("click_target", target)
+        return {"model": "jev-latest", "answers": answers, "usage": {"input_tokens": 50}}
+    post = Mock(side_effect=reply)
+    monkeypatch.setattr(model, "post_json", post)
+    trace = {}
+    decision = model.choose(cloud, "Find", [], provider="jev", trace=trace)
+    assert decision["choice"] == expected and decision["provider"] == "jev"
+    assert decision["operation_probabilities"][operation] == 1
+    assert "jev-secret" not in json.dumps(trace)
+    post.assert_called_once()
+
+
+def test_jev_missing_key_does_not_open_browser_or_reuse_helper_key(cloud, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    browser = Mock()
+    monkeypatch.setattr(agent, "Browser", browser)
+    with pytest.raises(ValueError, match="TYPESAFE_API_KEY"):
+        agent.Agent(cloud["url"], "Find", system1_provider="jev")
+    browser.assert_not_called()
+
+
+def test_jev_agent_routing_and_invalid_answer(cloud, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "jev-secret")
+    cloud["fingerprint"] = "observed"
+    browser = Mock(observe=Mock(return_value=cloud), fresh=Mock(return_value=True))
+    monkeypatch.setattr(agent, "Browser", Mock(return_value=browser))
+    post = Mock(return_value={"model": "jev-latest", "answers": {"operation": {
+        "choice": "CLICK", "confidence": 1, "probabilities": {"CLICK": 1}}}})
+    monkeypatch.setattr(model, "post_json", post)
+    runner = agent.Agent(cloud["url"], "Find", system1_provider="jev")
+    with pytest.raises(ValueError, match="Invalid Jev"):
+        runner.command("tick")
+    assert runner.state["model_calls"][0]["kind"] == "jev"
+    assert runner.state["model_calls"][0]["status"] == "error"
+    assert post.call_args.args[0].endswith("/v1/systemone")
+    browser.act.assert_not_called()
+
+
 def test_cloud_same_questions_state_choices_only_and_raw_trace(cloud, monkeypatch):
     trace = {}
     post = Mock(side_effect=[response({"operation": "CLICK"}), response({"click_target": "2"})])

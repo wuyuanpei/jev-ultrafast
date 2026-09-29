@@ -2,6 +2,7 @@
 
 import base64
 import time
+from functools import partial
 from pathlib import Path
 
 from .browser import Browser, StalePage
@@ -102,7 +103,7 @@ class Agent:
         try:
             result = function(*args, trace=record)
             record["status"] = "success"
-            if kind in {"laya", "deepseek"}:
+            if kind in {"laya", "deepseek", "jev"}:
                 record.update(operation=result["operation"], target=result["target"])
                 record["decision"] = {k: result.get(k) for k in (
                     "choice", "operation", "target", "confidence", "target_confidence", "latency_ms",
@@ -159,7 +160,8 @@ class Agent:
                 decision = choose(state["page"], state["goal"], state["history"],
                                   provider=provider, stage_call=stage_call)
             else:
-                decision = self.call_model(provider, choose, state["page"], state["goal"], state["history"],
+                chooser = partial(choose, provider="jev") if provider == "jev" else choose
+                decision = self.call_model(provider, chooser, state["page"], state["goal"], state["history"],
                                            decision_round=rounds + 1)
             self.check_cancelled()
             state["decision"] = decision
@@ -202,7 +204,7 @@ class Agent:
                         "text", field_text, context, field=action["label"],
                         decision_round=state.get("decision_rounds"),
                         decision_call_id=next((c["id"] for c in reversed(state.get("model_calls", []))
-                                               if c["kind"] in {"laya", "deepseek"}), None),
+                                               if c["kind"] in {"laya", "deepseek", "jev"}), None),
                     )
                     self.pending_text = (context, text, helper)
                     state["text_calls"].append({**helper, "field": action["label"], "value": text})

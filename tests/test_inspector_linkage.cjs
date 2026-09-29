@@ -172,3 +172,14 @@ selectCall(7);
 assert.equal(element('stage-outputs').hidden, true);
 assert.equal(element('model-output').hidden, false);
 console.log('Inspector linkage tests passed');
+context.fixture.model_calls.push({ ...cloudCall, id: 11, kind: 'jev', model: 'jev-latest',
+  request: { state: { page: { text: 'Jev input' } }, questions: { operation: {} } },
+  response: { answers: { operation: { choice: 'CLICK', probabilities: { CLICK: 1 } } } },
+  decision: { ...cloudCall.decision, provider: 'jev', operation_probabilities: { CLICK: 1 } },
+});
+selectCall(11);
+assert.match(element('selected-call').textContent, /Jev/);
+assert.match(element('ranking-note').textContent, /Ranked by Jev/);
+assert.match(element('question-contexts').innerHTML, /Jev input/);
+assert.equal(element('stage-outputs').hidden, true);
+assert.equal(JSON.parse(element('model-output').textContent).answers.operation.choice, 'CLICK');
