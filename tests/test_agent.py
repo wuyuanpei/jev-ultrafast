@@ -404,3 +404,79 @@ def test_failed_helper_trace_preserves_request_and_response(runner, monkeypatch,
     assert record.get("response") == (None if network_error else raw)
     assert record["error"]
     runner.state["browser"].act.assert_not_called()
+
+
+def test_cancellation_after_text_generation_never_types(runner, monkeypatch):
+    stop = False
+
+    def helper(*args, **kwargs):
+        nonlocal stop
+        stop = True
+        return "book", {"model": "test", "latency_ms": 1}
+
+    runner.should_cancel = lambda: "cancelled" if stop else None
+    monkeypatch.setattr(loop, "field_text", helper)
+    with pytest.raises(loop.RunCancelled):
+        runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    runner.state["browser"].act.assert_not_called()
+    assert runner.state["decision"] is None
+
+
+@pytest.mark.parametrize("count", [29, 30])
+def test_action_budget_allows_thirtieth_but_not_thirty_first(runner, count):
+    runner.state["history"] = [{"page_changed": True, "kind": "click"}] * count
+    runner.state["decision"] = decision("e3")
+    if count == 30:
+        with pytest.raises(ValueError, match="30-action"):
+            runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+        runner.state["browser"].act.assert_not_called()
+    else:
+        runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+        assert len(runner.state["history"]) == 30
+        runner.state["browser"].act.assert_called_once()
+
+
+def test_done_is_allowed_at_action_budget(runner):
+    runner.state["history"] = [{}] * 30
+    runner.state["decision"] = decision("DONE")
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    assert runner.state["status"] == "done"
+    runner.state["browser"].act.assert_not_called()
+
+
+@pytest.mark.parametrize("count", [59, 60])
+def test_decision_budget_allows_sixtieth_but_not_sixty_first(runner, monkeypatch, count):
+    choose = Mock(return_value=decision("DONE"))
+    monkeypatch.setattr(loop, "choose", choose)
+    runner.state["decisions"] = [{}] * count
+    if count == 60:
+        with pytest.raises(ValueError, match="model-call budget"):
+            runner.command("predict")
+        choose.assert_not_called()
+    else:
+        runner.command("predict")
+        assert len(runner.state["decisions"]) == 60
+        choose.assert_called_once()
+
+
+def test_events_log_execution_before_observation(runner):
+    runner.state["decision"] = decision("e3")
+    events = []
+    runner.on_event = lambda event, agent, payload: events.append(event)
+    runner.state["browser"].observe.side_effect = RuntimeError("observation failed")
+    with pytest.raises(RuntimeError):
+        runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    assert events == ["action_started", "action_executed"]
+    assert runner.state["history"][0]["node"] == 20
+
+
+def test_browser_initialization_failure_releases_created_tab(monkeypatch):
+    import jev_ultrafast.browser as browser
+
+    monkeypatch.setattr(browser, "ensure_daemon", Mock())
+    cdp = Mock(side_effect=[{"targetId": "owned"}, RuntimeError("attach failed"), {}])
+    monkeypatch.setattr(browser, "cdp", cdp)
+    with pytest.raises(RuntimeError, match="attach failed"):
+        browser.Browser("https://example.test")
+    assert cdp.call_args.args == ("Target.closeTarget",)
+    assert cdp.call_args.kwargs == {"targetId": "owned"}

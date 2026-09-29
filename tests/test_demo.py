@@ -1,5 +1,7 @@
 """Inspector file loading must not depend on the Windows locale."""
 
+import io
+import json
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -91,3 +93,32 @@ def test_invalid_url_preserves_current_task(monkeypatch, url):
     previous.close.assert_not_called()
     factory.assert_not_called()
     assert demo.AGENT is previous
+
+
+def test_baseline_poll_does_not_acquire_browser_lock(monkeypatch):
+    manager = Mock(state=Mock(return_value={"active": True, "tasks": []}))
+    monkeypatch.setattr(demo, "BASELINE", manager)
+    handler = demo.Handler.__new__(demo.Handler)
+    handler.headers = {"Host": f"127.0.0.1:{demo.PORT}"}
+    handler.path = "/api/baseline"
+    handler.send = Mock()
+    with demo.LOCK:
+        handler.do_GET()
+    assert handler.send.call_args.args[0] == 200
+    assert json.loads(handler.send.call_args.args[1])["active"]
+
+
+@pytest.mark.parametrize("authorized", [False, True])
+def test_baseline_post_token_and_duplicate_start_conflict(monkeypatch, authorized):
+    manager = Mock()
+    manager.start.side_effect = demo.BaselineConflict("Already running")
+    monkeypatch.setattr(demo, "BASELINE", manager)
+    handler = demo.Handler.__new__(demo.Handler)
+    handler.headers = {"Host": f"127.0.0.1:{demo.PORT}", "Content-Length": "2",
+                       "X-Demo-Token": demo.TOKEN if authorized else "wrong"}
+    handler.path = "/api/baseline/start"
+    handler.rfile = io.BytesIO(b"{}")
+    handler.send = Mock()
+    handler.do_POST()
+    assert handler.send.call_args.args[0] == (409 if authorized else 403)
+    assert manager.start.call_count == int(authorized)

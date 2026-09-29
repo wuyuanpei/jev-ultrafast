@@ -9,17 +9,27 @@ from .model import action_space, choose, field_context, field_text
 from .questions import MAX_STEPS
 
 
+class RunCancelled(RuntimeError):
+    """Cooperative cancellation at a boundary before browser input."""
+
+
 class Agent:
-    def __init__(self, url, goals, *, record_dir=None, screenshots=False):
+    def __init__(self, url, goals, *, record_dir=None, screenshots=False,
+                 on_event=None, should_cancel=None, prepare=None):
         task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
         if not task:
             raise ValueError("Supply a task")
         plan = [task]
         self.pending_text = None
+        self.on_event = on_event
+        self.should_cancel = should_cancel
         self.browser = Browser(url)
         self.record_dir = Path(record_dir) if record_dir else None
         self.screenshots = screenshots or bool(record_dir)
         try:
+            if prepare:
+                prepare(self.browser)
+            self.check_cancelled()
             page = self.browser.observe(screenshot=self.screenshots)
         except Exception:
             self.browser.close()
@@ -40,9 +50,29 @@ class Agent:
             started_at=None,
             record=bool(self.record_dir),
         )
+        try:
+            self.emit("observation", phase="initial")
+        except Exception:
+            self.browser.close()
+            raise
         if self.record_dir:
             self.record_dir.mkdir(parents=True, exist_ok=True)
             (self.record_dir / "000000.jpg").write_bytes(base64.b64decode(page["screenshot"]))
+
+    def check_cancelled(self):
+        callback = getattr(self, "should_cancel", None)
+        reason = callback() if callback else None
+        if reason:
+            raise RunCancelled(str(reason))
+
+    def emit(self, event, **payload):
+        callback = getattr(self, "on_event", None)
+        if callback:
+            callback(event, self, payload)
+
+    def observe(self, phase="step"):
+        self.state["page"] = self.state["browser"].observe(screenshot=self.screenshots)
+        self.emit("observation", phase=phase)
 
     def snapshot(self):
         return {
@@ -55,6 +85,7 @@ class Agent:
         record = dict(id=len(calls) + 1, kind=kind, status="pending", **metadata)
         calls.append(record)
         started = time.perf_counter()
+        self.emit("model_start", call=record)
         try:
             result = function(*args, trace=record)
             record["status"] = "success"
@@ -66,10 +97,12 @@ class Agent:
             raise
         finally:
             record["latency_ms"] = round((time.perf_counter() - started) * 1000)
+            self.emit("model_end", call=record)
 
     def command(self, name, body=None):
         body = body or {}
         state = self.state
+        self.check_cancelled()
         if name == "tick":
             try:
                 self.command("predict", {})
@@ -77,7 +110,7 @@ class Agent:
             except StalePage:
                 state["decision"] = None
                 state["status"] = "ready"
-                state["page"] = state["browser"].observe(screenshot=self.screenshots)
+                self.observe("stale_retry")
                 state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
                 return self.snapshot()
         elif name == "predict":
@@ -86,7 +119,8 @@ class Agent:
             if state["started_at"] is None:
                 state["started_at"] = time.perf_counter()
             if not state["browser"].fresh(state["page"]):
-                state["page"] = state["browser"].observe(screenshot=self.screenshots)
+                self.observe("refresh")
+            self.check_cancelled()
             state["decision"] = None
             if state["status"] in {"done", "blocked"}:
                 raise ValueError("This run has stopped. Start a fresh demo.")
@@ -136,6 +170,8 @@ class Agent:
                     self.pending_text = (context, text, helper)
                     state["text_calls"].append({**helper, "field": action["label"], "value": text})
             # Browser.act checks freshness immediately before input, including after text generation.
+            self.check_cancelled()
+            self.emit("action_started", action=action, text=text)
             state["browser"].act(action, page, text=text)
             self.pending_text = None
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
@@ -146,6 +182,10 @@ class Agent:
                     "action": action["label"],
                     "kind": action["kind"],
                     "choice": selected,
+                    "node": action.get("node"),
+                    "role": action.get("role"),
+                    "previous_value": action.get("value"),
+                    "previous_checked": action.get("checked"),
                     "probability": decision["probabilities"][selected],
                     "confidence": decision["confidence"],
                     "latency_ms": decision["latency_ms"],
@@ -161,7 +201,8 @@ class Agent:
                     "elapsed_ms": state["elapsed_ms"],
                 }
             )
-            state["page"] = state["browser"].observe(screenshot=self.screenshots)
+            self.emit("action_executed", action=state["history"][-1])
+            self.observe()
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
             state["history"][-1].update(
                 page_changed=state["page"]["fingerprint"] != page["fingerprint"],

@@ -30,6 +30,11 @@
           <div><dt>Text model</dt><dd id="text-model-address">Loading...</dd></div>
         </dl>
       </section>
+      <nav class="view-tabs" role="tablist" aria-label="任务模式">
+        <button type="button" id="free-tab" role="tab" aria-controls="free-panel" aria-selected="true">自由任务</button>
+        <button type="button" id="baseline-tab" role="tab" aria-controls="baseline-panel" aria-selected="false" tabindex="-1">基线测试</button>
+      </nav>
+      <section id="free-panel" role="tabpanel" aria-labelledby="free-tab">
       <form id="task-form">
         <div class="task-label">
           <label for="goal">Give it a task</label>
@@ -53,12 +58,48 @@ Find one-way flights from Zurich to London on September 20, 2026, for one adult 
           </button>
         </div>
       </form>
+      </section>
+      <section id="baseline-panel" role="tabpanel" aria-labelledby="baseline-tab" hidden>
+        <div class="baseline-heading">
+          <h2>10 项网页基线</h2>
+          <div class="baseline-controls">
+            <label for="baseline-repeats">重复次数 <input id="baseline-repeats" type="number" min="1" max="10" step="1" value="1" /></label>
+            <button type="button" id="baseline-run-all" class="primary"><span aria-hidden="true">▶</span> 运行全部</button>
+            <button type="button" id="baseline-stop" disabled><span aria-hidden="true">■</span> 停止</button>
+            <button type="button" id="baseline-save" disabled><span aria-hidden="true">↓</span> 保存结果与评估</button>
+          </div>
+        </div>
+        <div class="baseline-batch-bar">
+          <label for="baseline-runs">历史批次 <select id="baseline-runs"><option value="">尚无批次</option></select></label>
+          <span id="baseline-status" role="status" aria-live="polite">正在读取任务</span>
+        </div>
+        <p id="baseline-path" class="baseline-path"></p>
+        <div id="baseline-error" role="alert" hidden></div>
+        <div class="table-scroll" tabindex="0" aria-label="基线任务表格">
+          <table class="baseline-table">
+            <thead><tr><th scope="col">任务</th><th scope="col">覆盖能力</th><th scope="col">状态 / 评估</th><th scope="col">动作</th><th scope="col">Laya / Text</th><th scope="col">耗时</th><th scope="col">运行</th></tr></thead>
+            <tbody id="baseline-tasks"></tbody>
+          </table>
+        </div>
+        <div class="baseline-attempt-heading"><h3>运行记录</h3><span id="baseline-summary"></span></div>
+        <div class="table-scroll" tabindex="0" aria-label="基线运行记录表格">
+          <table class="baseline-table attempts-table">
+            <thead><tr><th scope="col">任务 / 轮次</th><th scope="col">状态 / 评估</th><th scope="col">动作</th><th scope="col">Laya / Text</th><th scope="col">耗时</th><th scope="col">记录</th></tr></thead>
+            <tbody id="baseline-attempts"></tbody>
+          </table>
+        </div>
+        <p id="baseline-selected" class="baseline-selected">未选择运行记录</p>
+        <details id="baseline-evaluation-panel" hidden>
+          <summary>独立评估</summary>
+          <pre id="baseline-evaluation"></pre>
+        </details>
+      </section>
       <div class="toolbar">
         <div class="status">
           <span class="dot" id="status-dot"></span
           ><span id="status" role="status">Ready to explore</span>
         </div>
-        <div class="controls"><label class="overlay-control"><input name="pace" id="pace" type="checkbox"> Slow motion</label>
+        <div class="controls" id="free-controls"><label class="overlay-control"><input name="pace" id="pace" type="checkbox"> Slow motion</label>
           <label class="overlay-control"
             ><input name="overlays" id="overlays" type="checkbox" checked />
             Targets</label
@@ -69,18 +110,22 @@ Find one-way flights from Zurich to London on September 20, 2026, for one adult 
         </div>
       </div>
       <div id="error" role="alert" hidden></div>
+      <div id="observation-toolbar" class="observation-toolbar" hidden>
+        <label for="observation-step">观察步骤 <select id="observation-step"></select></label>
+        <span id="observation-status" role="status"></span>
+      </div>
       <section class="workspace">
         <div class="browser-panel">
           <div class="browser-bar">
             <div class="traffic"><b></b><b></b><b></b></div>
             <span id="url">Local demo browser</span
-            ><span class="live">LIVE</span>
+            ><span class="live" id="browser-mode">LIVE</span>
           </div>
           <div class="viewport" id="viewport">
             <div class="empty" id="empty">
               <p class="empty-symbol">[ ↗ ]</p>
-              <h2>Watch the decision happen.</h2>
-              <p>
+              <h2 id="empty-title">Watch the decision happen.</h2>
+              <p id="empty-description">
                 Start a task to see a real browser, its available<br />actions,
                 and the model's choice.
               </p>
@@ -140,14 +185,16 @@ Find one-way flights from Zurich to London on September 20, 2026, for one adult 
       </section>
       <p id="selected-call" class="muted">No call selected</p>
       <section class="model-io">
-        <details id="model-input-panel" open>
-          <summary>What the model sees</summary>
-          <div id="question-contexts"></div>
+        <div class="model-inputs">
+          <details id="model-input-panel" open>
+            <summary>What the model sees</summary>
+            <div id="question-contexts"></div>
+          </details>
           <details id="raw-request-panel" open>
             <summary>HTTP request body</summary>
             <pre id="model-state">No request recorded.</pre>
           </details>
-        </details>
+        </div>
         <details id="model-output-panel" open>
           <summary>What the model outputs</summary>
           <pre id="model-output">No response recorded.</pre>

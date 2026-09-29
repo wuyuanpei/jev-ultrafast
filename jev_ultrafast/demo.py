@@ -7,9 +7,10 @@ import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .agent import Agent
+from .baseline import BaselineConflict, BaselineManager
 from .questions import MAX_STEPS
 
 ROOT = Path(__file__).parent
@@ -18,6 +19,14 @@ ORIGIN = f"http://127.0.0.1:{PORT}"
 TOKEN = secrets.token_urlsafe(32)
 LOCK = threading.Lock()
 AGENT = None
+BASELINE = None
+
+
+def baseline():
+    global BASELINE
+    if BASELINE is None:
+        BASELINE = BaselineManager(Path.cwd() / "artifacts" / "baselines", ORIGIN)
+    return BASELINE
 
 
 def load_environment():
@@ -41,6 +50,7 @@ def response_state():
         "laya_base_url": os.environ.get("LAYA_BASE_URL", "http://127.0.0.1:8791").rstrip("/"),
         "text_model_base_url": os.environ.get("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1").rstrip("/"),
         "max_steps": MAX_STEPS,
+        "baseline_active": bool(BASELINE and BASELINE.active),
     }
 
 
@@ -53,6 +63,19 @@ def close_browser():
 
 def command(name, body):
     global AGENT
+    if name.startswith("baseline/"):
+        manager = baseline()
+        if name == "baseline/start":
+            result = manager.start(body.get("task_ids"), body.get("repeats", 1))
+            close_browser()
+            return result
+        if name == "baseline/stop":
+            return manager.stop()
+        if name == "baseline/save":
+            return manager.save(body.get("run_id"))
+        raise ValueError("Unknown baseline command")
+    if BASELINE and BASELINE.active:
+        raise BaselineConflict("Baseline owns the browser; stop it before running a free task")
     if name == "reset":
         scenario = body.get("scenario", "flights")
         if scenario not in {"travel", "research", "flights", "custom"}:
@@ -114,6 +137,30 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Host") != f"127.0.0.1:{PORT}":
             return self.send(403, "Forbidden", "text/plain")
         path = urlparse(self.path).path
+        if path.startswith("/api/baseline"):
+            try:
+                manager = baseline()
+                query = parse_qs(urlparse(self.path).query)
+                run_id = query.get("run_id", [None])[0]
+                attempt_id = query.get("attempt_id", [None])[0]
+                if path == "/api/baseline":
+                    result = manager.state()
+                elif path == "/api/baseline/run":
+                    result = manager.read_run(run_id)
+                elif path == "/api/baseline/attempt":
+                    result = {**manager.read_attempt(run_id, attempt_id),
+                              "text_model": os.getenv("TEXT_MODEL", "deepseek-chat"),
+                              "laya_base_url": os.getenv("LAYA_BASE_URL", "http://127.0.0.1:8791"),
+                              "text_model_base_url": os.getenv("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1"),
+                              "max_steps": MAX_STEPS}
+                elif path == "/api/baseline/frame":
+                    return self.send(200, manager.frame(run_id, attempt_id, query.get("name", [None])[0]),
+                                     "image/jpeg")
+                else:
+                    raise ValueError("Unknown baseline route")
+                return self.send(200, json.dumps(result))
+            except (ValueError, OSError) as error:
+                return self.send(400, json.dumps({"error": str(error)}))
         if path == "/api/state":
             with LOCK:
                 return self.send(200, json.dumps(response_state()))
@@ -151,6 +198,8 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
             result = command(self.path.removeprefix("/api/"), body)
             self.send(200, json.dumps(result))
+        except BaselineConflict as error:
+            self.send(409, json.dumps({"error": str(error)}))
         except (ValueError, RuntimeError, TimeoutError) as error:
             self.send(400, json.dumps({"error": str(error)}))
         except Exception:
@@ -171,6 +220,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     load_environment()
+    baseline()
     atexit.register(close_browser)
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"Jev Ultrafast: {ORIGIN}", flush=True)

@@ -8,10 +8,13 @@ const element = id => {
 };
 const context = vm.createContext({
   document: { getElementById: element, querySelector: () => ({ content: 'test' }) },
-  window: { location: { origin: 'http://localhost' } }, URL,
+  window: { location: { origin: 'http://localhost' } }, URL, URLSearchParams,
+  setInterval: () => 0,
   fetch: () => new Promise(() => {}),
 });
 vm.runInContext(fs.readFileSync('jev_ultrafast/static/app.js', 'utf8'), context);
+element('model-input-panel').open = false;
+element('raw-request-panel').open = true;
 context.fixture = { page: null, history: [], model_calls: [
   { id: 1, kind: 'laya', model: 'local', status: 'success', request: { state: { text: 'first' } }, response: { answers: { operation: 'CLICK' } } },
   { id: 2, kind: 'text', model: '<script>', field: 'Search', status: 'error', request: { messages: [{ role: 'user', content: '{"goal":"second"}' }] }, response: { choices: [] }, error: 'Invalid field' },
@@ -24,7 +27,8 @@ assert.equal(JSON.parse(element('model-output').textContent).error, 'Invalid fie
 element('history').listeners.click({ target: { closest: () => ({ dataset: { callId: '1' } }) } });
 assert.equal(JSON.parse(element('model-state').textContent).state.text, 'first');
 assert.equal(JSON.parse(element('model-output').textContent).answers.operation, 'CLICK');
-assert.equal(element('model-input-panel').open, true);
+assert.equal(element('model-input-panel').open, false);
+assert.equal(element('raw-request-panel').open, true);
 assert.equal(element('model-output-panel').open, true);
 context.fixture.model_calls[0].response.question_contexts = [
   { question: 'operation', pass: 1, input_tokens: 800, max_tokens: 1024, token_ids: [1, 2], context: '[CLS] <unsafe> operation' },
@@ -36,7 +40,10 @@ assert.match(element('question-contexts').innerHTML, /2024 input tokens total/);
 assert.match(element('question-contexts').innerHTML, /800 \/ 1024 tokens/);
 assert.match(element('question-contexts').innerHTML, /Pass 2/);
 assert.match(element('question-contexts').innerHTML, /&lt;unsafe&gt;/);
-assert.equal(element('raw-request-panel').open, false);
+assert.equal(element('raw-request-panel').open, true, 'contexts do not hide HTTP request body');
+element('raw-request-panel').open = true;
+vm.runInContext('render()', context);
+assert.equal(element('raw-request-panel').open, true, 'polling does not collapse an opened HTTP request');
 assert.deepEqual(JSON.parse(element('model-output').textContent), { answers: { operation: 'CLICK' } });
 assert.deepEqual(context.fixture.model_calls[0].response.question_contexts[0].token_ids, [1, 2]);
 context.fixture.model_calls[0].error = 'Invalid answer';
@@ -51,6 +58,7 @@ vm.runInContext('state = { model_calls: [], history: [] }; render()', context);
 assert.equal(element('download').disabled, true);
 assert.equal(element('model-output').textContent, 'No response recorded.');
 const html = fs.readFileSync('jev_ultrafast/static/index.html', 'utf8');
-assert.match(html, /id="model-input-panel" open/);
+assert.match(html, /id="model-input-panel" open>/);
+assert.match(html, /id="model-input-panel" open>[\s\S]*?<\/details>\s*<details id="raw-request-panel" open>/);
 assert.match(html, /id="model-output-panel" open/);
 console.log('Trace UI tests passed');

@@ -69,7 +69,7 @@ Open **http://127.0.0.1:8766**, enter a target website URL or choose an existing
 
 Chrome connects through [Browser Harness](https://github.com/browser-use/browser-harness), installed by `uv sync`. Run `uv run browser-harness --doctor` if it needs connecting. Allow remote debugging in Chrome when prompted.
 
-Decision trail lists Laya and text-helper calls separately, including failed calls. Select a call to inspect its complete request body and formatted response in the two expanded panels. Exported traces include these records, without authentication headers. Traces may contain page content and entered text; review them before sharing.
+Decision trail lists Laya and text-helper calls separately, including failed calls. Select a call to inspect its complete request body and formatted response. What the model sees, HTTP request body, and model output are independently collapsible and expanded by default. Exported traces include these records, without authentication headers. Traces may contain page content and entered text; review them before sharing.
 
 Laya requests include `include_context: true`. With the updated local systemone server, the input panel shows each question's final tokenized sequence (decoded with special tokens), unpadded token count, sequence limit, and inference pass. The original HTTP request remains separately available. Older servers and historical traces without `question_contexts` show an unavailable notice instead of estimated lengths. Exported responses retain exact token IDs as well as decoded text.
 
@@ -124,6 +124,8 @@ Every executed target is resolved from an observed node. The executor rechecks p
 | [demo.py](jev_ultrafast/demo.py) | Local inspector |
 
 ## Evidence and limits
+
+The inspector also provides a repeatable, ten-task diagnostic baseline with independent outcome checks, per-observation screenshots, and saved traces. See the [Chinese baseline task and evaluation guide](docs/baseline_tasks_zh.md) for exact goals, setup, acceptance criteria, and artifact locations. This diagnostic set is not a held-out benchmark; its presence does not establish a success rate or verify live-site compatibility.
 
 The current video is a **7,073 ms** Google Flights run. Timing starts after initial page observation and includes model calls, generated text, browser work, stale decisions, and loading waits. A fresh independent check verifies the one-way setting, Zürich, London, September 20, 2026, and visible flight options. The video plays at 1×, with no opening hold and a 0.5-second final hold.
 
