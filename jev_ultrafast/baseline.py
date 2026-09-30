@@ -114,7 +114,8 @@ class BaselineManager:
         for path in sorted(self.root.glob("*/summary.json"), reverse=True):
             try:
                 batch = self.read_run(path.parent.name)
-                rows.append({k: batch[k] for k in ("id", "status", "created_at")})
+                rows.append({**{k: batch[k] for k in ("id", "status", "created_at")},
+                             "name": batch.get("name", "")})
             except (ValueError, OSError, KeyError):
                 continue
         return rows
@@ -314,6 +315,29 @@ class BaselineManager:
             self.persist()
         batch = self.read_run(run_id)
         return {**self.state(), "saved_path": batch["path"]}
+
+    def rename(self, run_id, name):
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80 or any(ord(c) < 32 for c in name):
+            raise ValueError("Batch name must contain 1-80 characters without control characters")
+        name = name.strip()
+        with self.io_lock, self.lock:
+            folder = self.folder(run_id)
+            if (folder.parent != self.root or folder.name != run_id
+                    or (self.root / run_id).is_symlink() or (self.root / run_id).is_junction()):
+                raise ValueError("Invalid run path")
+            if self.batch and self.batch["id"] == run_id and self.active:
+                raise BaselineConflict("Cannot rename a running batch")
+            try:
+                batch = json.loads((folder / "summary.json").read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                raise ValueError("Unknown run") from None
+            if batch.get("status") not in TERMINAL:
+                raise BaselineConflict("Cannot rename an unfinished batch")
+            batch["name"] = name
+            atomic_json(folder / "summary.json", self.clean(batch))
+            if self.batch and self.batch["id"] == run_id:
+                self.batch = batch
+        return {**self.state(), "renamed_batch": self.clean(batch)}
 
     def delete(self, run_id):
         with self.io_lock, self.lock:

@@ -76,6 +76,8 @@ def command(name, body):
             return manager.stop()
         if name == "baseline/save":
             return manager.save(body.get("run_id"))
+        if name == "baseline/rename":
+            return manager.rename(body.get("run_id"), body.get("name"))
         if name == "baseline/delete":
             return manager.delete(body.get("run_id"))
         raise ValueError("Unknown baseline command")

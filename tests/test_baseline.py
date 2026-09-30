@@ -414,3 +414,45 @@ def test_delete_refuses_linked_tree_before_removing_anything(tmp_path, monkeypat
         run.delete(batch["id"])
     assert (folder / "summary.json").exists()
     assert list(folder.rglob("*.jpg"))
+
+
+def test_rename_history_persists_without_moving_evidence(tmp_path):
+    run = manager(tmp_path, agent_factory=factory())
+    run.start([run.tasks[0]["id"]])
+    first = finish(run)
+    run.start([run.tasks[0]["id"]])
+    second = finish(run)
+    old_folder = run.folder(first["id"])
+    trace = (old_folder / first["attempts"][0]["id"] / "trace.json").read_bytes()
+    result = run.rename(first["id"], "  携程 多条件验证  ")
+    assert result["renamed_batch"]["name"] == "携程 多条件验证"
+    assert result["batch"]["id"] == second["id"]
+    assert next(row for row in result["runs"] if row["id"] == first["id"])["name"] == "携程 多条件验证"
+    assert old_folder.exists()
+    assert (old_folder / first["attempts"][0]["id"] / "trace.json").read_bytes() == trace
+    assert run.read_run(first["id"])["name"] == "携程 多条件验证"
+    recovered = manager(tmp_path, agent_factory=factory())
+    assert recovered.read_run(first["id"])["name"] == "携程 多条件验证"
+    current = run.rename(second["id"], "Wikipedia")
+    assert current["batch"]["name"] == "Wikipedia"
+
+
+def test_rename_rejects_active_unknown_and_invalid_names(tmp_path):
+    started, release = threading.Event(), threading.Event()
+    run = manager(tmp_path, agent_factory=factory(hold=(started, release)))
+    run.start([run.tasks[0]["id"]])
+    run_id = run.batch["id"]
+    try:
+        assert started.wait(3)
+        with pytest.raises(BaselineConflict):
+            run.rename(run_id, "still running")
+    finally:
+        release.set()
+        finish(run)
+    for name in ("", "  ", "a" * 81, "one\ntwo", None):
+        with pytest.raises(ValueError, match="Batch name"):
+            run.rename(run_id, name)
+    for path in ("../20260928_000000_000", "20260928_000000_000"):
+        with pytest.raises(ValueError):
+            run.rename(path, "name")
+    assert "name" not in run.read_run(run_id)

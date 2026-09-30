@@ -35,7 +35,7 @@ const requests = [];
 let failure = null, deferred = null;
 const context = vm.createContext({
   document: { getElementById: element, querySelector: () => ({ content: 'secret' }), querySelectorAll: () => [] },
-  window: { location: { origin: 'http://localhost' }, confirm: () => false }, URL, URLSearchParams,
+  window: { location: { origin: 'http://localhost' }, confirm: () => false, prompt: () => null }, URL, URLSearchParams,
   setInterval: () => 0,
   fetch: async (path, options = {}) => {
     requests.push({ path, options });
@@ -45,6 +45,11 @@ const context = vm.createContext({
     if (path.includes('/attempt?')) value = snapshot;
     if (path.includes('/run?')) value = path.includes(historical.id) ? historical : batch;
     if (path.endsWith('/save')) value = { ...data, saved_path: JSON.parse(options.body).run_id === historical.id ? historical.path : batch.path };
+    if (path.endsWith('/rename')) {
+      historical.name = JSON.parse(options.body).name;
+      value = { ...data, runs: [...data.runs, { id: historical.id, status: historical.status, name: historical.name }],
+        renamed_batch: historical };
+    }
     return { ok: true, json: async () => JSON.parse(JSON.stringify(value)) };
   },
 });
@@ -64,6 +69,7 @@ async function main() {
   assert.equal(element('baseline-run-all').disabled, true);
   assert.equal(element('baseline-stop').disabled, false);
   assert.equal(element('baseline-delete').disabled, true);
+  assert.equal(element('baseline-rename').disabled, true);
   assert.equal(element('system1-provider').disabled, true);
   assert.equal(element('baseline-path').textContent, batch.path);
   assert.match(element('baseline-attempts').innerHTML, /selected-attempt/);
@@ -161,6 +167,26 @@ async function main() {
   await run('refreshBaseline()');
   assert.equal(run('selectedRunId'), historical.id, 'polling keeps a selected historical run');
   assert.equal(element('baseline-path').textContent, historical.path);
+
+  assert.equal(element('baseline-rename').disabled, false);
+  const beforeRename = requests.length;
+  element('baseline-rename').listeners.click();
+  assert.equal(requests.length, beforeRename, 'cancelled rename sends no request');
+  context.window.prompt = (message, initial) => {
+    assert.match(message, new RegExp(historical.id));
+    assert.equal(initial, historical.id);
+    return '<研究批次>';
+  };
+  element('baseline-rename').listeners.click();
+  await flush();
+  const rename = requests.find(r => r.path.endsWith('/rename'));
+  assert.deepEqual(JSON.parse(rename.options.body), { run_id: historical.id, name: '<研究批次>' });
+  assert.match(element('baseline-runs').innerHTML, /&lt;研究批次&gt; · 20260927_123456_001/);
+  assert.equal(element('baseline-runs').value, historical.id);
+  assert.equal(element('baseline-path').textContent, historical.path);
+  await run('refreshBaseline()');
+  assert.match(element('baseline-runs').innerHTML, /&lt;研究批次&gt;/);
+  assert.equal(element('baseline-runs').value, historical.id);
   await run("baselineAction('save', { run_id: selectedRunId })");
   request = requests.filter(r => r.path.endsWith('/save')).at(-1);
   assert.equal(JSON.parse(request.options.body).run_id, historical.id);
@@ -187,7 +213,7 @@ async function main() {
   assert.equal(element('screenshot').hidden, true, 'stale baseline screenshot cleared');
 
   const html = fs.readFileSync('jev_ultrafast/static/index.html', 'utf8');
-  assert.match(html, /class="baseline-run-picker">[\s\S]*?id="baseline-runs"[\s\S]*?id="baseline-delete"[^>]*>删除<\/button>\s*<\/div>/);
+  assert.match(html, /class="baseline-run-picker">[\s\S]*?id="baseline-runs"[\s\S]*?id="baseline-rename"[^>]*>重命名<\/button>[\s\S]*?id="baseline-delete"[^>]*>删除<\/button>\s*<\/div>/);
   assert.match(html, /id="baseline-repeats"[^>]*min="1" max="10" step="1" value="1"/);
   assert.match(html, /role="tabpanel" aria-labelledby="baseline-tab"/);
   console.log('Baseline UI tests passed');

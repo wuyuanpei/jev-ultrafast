@@ -383,12 +383,13 @@ function renderBaseline() {
   $('baseline-run-all').disabled = locked || !baseline.tasks.length;
   $('baseline-stop').disabled = baselineBusy || !baseline.active;
   $('baseline-save').disabled = baselineBusy || !batch;
+  $('baseline-rename').disabled = baselineBusy || !batch || !['completed', 'cancelled', 'error', 'interrupted'].includes(batch.status);
   $('baseline-delete').disabled = baselineBusy || !batch || !['completed', 'cancelled', 'error', 'interrupted'].includes(batch.status);
   $('baseline-repeats').disabled = locked;
   const runs = [...baseline.runs];
   if (batch && !runs.some(r => r.id === batch.id)) runs.unshift(batch);
   const runOptions = runs.length
-    ? runs.map(r => `<option value="${escape(r.id)}">${escape(r.id)} · ${escape(baselineLabel(r.status))}</option>`).join('')
+    ? runs.map(r => `<option value="${escape(r.id)}">${r.name ? `${escape(r.name)} · ` : ''}${escape(r.id)} · ${escape(baselineLabel(r.status))}</option>`).join('')
     : '<option value="">尚无批次</option>';
   if ($('baseline-runs').innerHTML !== runOptions) $('baseline-runs').innerHTML = runOptions;
   $('baseline-runs').value = selectedRunId || batch?.id || '';
@@ -513,6 +514,7 @@ async function baselineAction(name, body = {}) {
       if (view === 'baseline') state = { status: 'idle', page: null, model_calls: [], history: [], elements: [] };
     }
     acceptBaseline(data);
+    if (name === 'rename' && data.renamed_batch?.id === selectedRunId) baseline.batch = data.renamed_batch;
     if (name === 'delete' && view === 'baseline') render();
     renderBaseline();
     if (data.saved_path) $('baseline-path').textContent = data.saved_path;
@@ -571,6 +573,18 @@ for (const name of ['free', 'baseline']) $(`${name}-tab`).addEventListener('keyd
 $('baseline-run-all').addEventListener('click', () => startBaseline());
 $('baseline-stop').addEventListener('click', () => baselineAction('stop'));
 $('baseline-save').addEventListener('click', () => baselineAction('save', { run_id: selectedRunId }));
+$('baseline-rename').addEventListener('click', () => {
+  if ($('baseline-rename').disabled) return;
+  const batch = baseline.batch;
+  if (!batch) return;
+  const name = window.prompt(`重命名批次 ${batch.id}（最多 80 字）`, batch.name || batch.id);
+  if (name === null) return;
+  if (!name.trim() || name.trim().length > 80) {
+    showBaselineError(Error('批次名称必须为 1–80 个字符。'));
+    return;
+  }
+  baselineAction('rename', { run_id: batch.id, name: name.trim() });
+});
 $('baseline-delete').addEventListener('click', () => {
   if ($('baseline-delete').disabled) return;
   const batch = baseline.batch;
